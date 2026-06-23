@@ -1,0 +1,12 @@
+fastapi==0.110.0
+uvicorn==0.28.0
+pydantic==2.6.4
+pydantic-settings==2.2.1
+PyJWT==2.8.0
+cryptography==42.0.5
+python-multipart==0.0.9
+sqlalchemy==2.0.28
+aiosqlite==0.20.0
+motor==3.3.2
+async-timeout==4.0.3
+websockets==12.0

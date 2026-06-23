@@ -1,0 +1,1980 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aegis Shield - Smart Policing Command Center</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- FontAwesome & Google Fonts -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Share+Tech+Mono&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- Leaflet Map CSS & JS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  
+  <!-- React, Babel & jsPDF -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone@7.26.10/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  
+  <!-- Face API Script (Served from FastAPI static route) -->
+  <script src="/static/face-api.min.js"></script>
+
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      background: radial-gradient(circle at top right, #0d1527, #020617);
+      min-height: 100vh;
+      color: #f3f4f6;
+      overflow-x: hidden;
+    }
+    h1, h2, h3, .title-font {
+      font-family: 'Outfit', sans-serif;
+    }
+    .mono-font {
+      font-family: 'Share Tech Mono', monospace;
+    }
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar {
+      width: 5px;
+      height: 5px;
+    }
+    ::-webkit-scrollbar-track {
+      background: rgba(15, 23, 42, 0.1);
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(59, 130, 246, 0.3);
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(59, 130, 246, 0.6);
+    }
+    /* Hud Overlays */
+    .glass-panel {
+      background: rgba(15, 23, 42, 0.65);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(0, 242, 254, 0.15);
+      box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+    }
+    #dashboard-map {
+      height: 220px;
+      border-radius: 16px;
+      border: 1px solid rgba(0, 242, 254, 0.25);
+      z-index: 10;
+    }
+    .cyber-btn {
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid rgba(0, 242, 254, 0.3);
+      transition: all 0.2s ease;
+    }
+    .cyber-btn:hover:not(:disabled) {
+      background: rgba(0, 242, 254, 0.15);
+      border-color: rgba(0, 242, 254, 0.8);
+      box-shadow: 0 0 10px rgba(0, 242, 254, 0.3);
+    }
+    .cyber-btn.active {
+      background: rgba(0, 242, 254, 0.2);
+      border-color: #00f2fe;
+      color: #00f2fe;
+      box-shadow: 0 0 12px rgba(0, 242, 254, 0.4);
+    }
+    /* Corner indicators */
+    .hud-box {
+      position: relative;
+    }
+    .hud-corner {
+      position: absolute;
+      width: 10px;
+      height: 10px;
+      border-color: #00f2fe;
+      border-style: solid;
+      pointer-events: none;
+    }
+    .corner-tl { top: -1px; left: -1px; border-width: 2px 0 0 2px; }
+    .corner-tr { top: -1px; right: -1px; border-width: 2px 2px 0 0; }
+    .corner-bl { bottom: -1px; left: -1px; border-width: 0 0 2px 2px; }
+    .corner-br { bottom: -1px; right: -1px; border-width: 0 2px 2px 0; }
+    
+    /* Radar Scanning Sweep */
+    @keyframes scan {
+      0% { top: 0%; }
+      50% { top: 100%; }
+      100% { top: 0%; }
+    }
+    .scanner-sweep {
+      height: 2px;
+      background: linear-gradient(to right, transparent, #00f2fe, transparent);
+      animation: scan 4s infinite linear;
+      box-shadow: 0 0 8px #00f2fe;
+    }
+  </style>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              400: '#38bdf8',
+              500: '#0ea5e9',
+              600: '#0284c7',
+            }
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body class="p-3 md:p-5">
+
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="react" data-preset-options='{"react": {"runtime": "classic"}}'>
+    const { useState, useEffect, useRef } = React;
+
+    function App() {
+      // Navigation states
+      const [view, setView] = useState('command'); // 'command', 'camera', 'solar'
+      const [connectionStatus, setConnectionStatus] = useState('connecting');
+      
+      // Data feeds
+      const [alerts, setAlerts] = useState([]);
+      const [nodes, setNodes] = useState([]);
+      const [telemetryLogs, setTelemetryLogs] = useState([]);
+      const [stats, setStats] = useState({
+        totalAlerts: 0,
+        unresolvedCount: 0,
+        activeNodes: 0,
+        batterySoC: 92
+      });
+
+      // Selected items
+      const [selectedAlert, setSelectedAlert] = useState(null);
+      const [selectedNodeDetails, setSelectedNodeDetails] = useState(null);
+
+      // Local Webcam AI Scanner states
+      const [modelsLoaded, setModelsLoaded] = useState(false);
+      const [cameraActive, setCameraActive] = useState(false);
+      const [faceMatchStatus, setFaceMatchStatus] = useState('SCANNING...');
+      const [confidence, setConfidence] = useState(0);
+      const [enrollName, setEnrollName] = useState('');
+
+      // New Bodycam Selection & Remote Streaming states
+      const [videoDevices, setVideoDevices] = useState([]);
+      const [selectedDeviceId, setSelectedDeviceId] = useState('');
+      const [feedSource, setFeedSource] = useState('local'); // 'local' or 'remote'
+      const [remoteFrame, setRemoteFrame] = useState(null);
+      const remoteImgRef = useRef(null);
+      const [systemLogs, setSystemLogs] = useState([]);
+      const [isScanningBiometrics, setIsScanningBiometrics] = useState(false);
+      const isScanningBiometricsRef = useRef(false);
+
+      const setScanningBiometrics = (val) => {
+        setIsScanningBiometrics(val);
+        isScanningBiometricsRef.current = val;
+      };
+
+      const [enrollIsWanted, setEnrollIsWanted] = useState(false);
+      const [dbProfiles, setDbProfiles] = useState([]);
+      const [notifications, setNotifications] = useState([]);
+      const lastAlertedSuspectsRef = useRef({});
+      const lastAlertedUnknownRef = useRef(0);
+      const [liveTime, setLiveTime] = useState('');
+      const [liveDate, setLiveDate] = useState('');
+
+      const videoRef = useRef(null);
+      const canvasRef = useRef(null);
+      const streamRef = useRef(null);
+      const faceMatcherRef = useRef(null);
+      const labeledDescriptorsRef = useRef([]);
+      const objectWorkerRef = useRef(null);
+
+      const userCoordsRef = useRef({ latitude: 23.0225, longitude: 72.5714 });
+      const dashboardMapInstanceRef = useRef(null);
+      const dashboardMarkersRef = useRef({});
+
+      // Initialize Geolocation tracking to get real coordinates
+      useEffect(() => {
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            (position) => {
+              const lat = position.coords.latitude;
+              const lng = position.coords.longitude;
+              // Bounds check for Ahmedabad region
+              if (lat > 22.8 && lat < 23.2 && lng > 72.4 && lng < 72.8) {
+                userCoordsRef.current = { latitude: lat, longitude: lng };
+                addSystemLog(`GPS Lock (Ahmedabad): ${lat.toFixed(4)}, ${lng.toFixed(4)}`, 'normal');
+              } else {
+                userCoordsRef.current = { latitude: 23.0225, longitude: 72.5714 };
+                addSystemLog(`GPS locked on Ahmedabad HQ: 23.0225, 72.5714`, 'normal');
+              }
+            },
+            (error) => {
+              console.warn("Geolocation access denied or timed out. Defaulting to Ahmedabad HQ.");
+              userCoordsRef.current = { latitude: 23.0225, longitude: 72.5714 };
+              addSystemLog(`GPS locked on Ahmedabad HQ: 23.0225, 72.5714`, 'normal');
+            },
+            { enableHighAccuracy: true, timeout: 8000 }
+          );
+        }
+      }, []);
+
+      // Initialize and Sync Dashboard Map
+      useEffect(() => {
+        let lat = 23.0225;
+        let lng = 72.5714;
+        if (nodes.length > 0) {
+          lat = nodes[0].latitude;
+          lng = nodes[0].longitude;
+        } else if (userCoordsRef.current) {
+          lat = userCoordsRef.current.latitude;
+          lng = userCoordsRef.current.longitude;
+        }
+
+        if (!dashboardMapInstanceRef.current) {
+          const map = L.map('dashboard-map', {
+            zoomControl: false,
+            attributionControl: false
+          }).setView([lat, lng], 13);
+
+          L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            maxZoom: 20
+          }).addTo(map);
+
+          dashboardMapInstanceRef.current = map;
+        } else {
+          dashboardMapInstanceRef.current.setView([lat, lng]);
+        }
+
+        // Update markers for nodes
+        const map = dashboardMapInstanceRef.current;
+        if (map) {
+          // Clear old markers
+          const activeIds = new Set(nodes.map(n => n.id));
+          Object.keys(dashboardMarkersRef.current).forEach(id => {
+            if (!activeIds.has(id)) {
+              dashboardMarkersRef.current[id].remove();
+              delete dashboardMarkersRef.current[id];
+            }
+          });
+
+          // Add or update markers
+          nodes.forEach(node => {
+            const markerLat = node.latitude;
+            const markerLng = node.longitude;
+            
+            if (dashboardMarkersRef.current[node.id]) {
+              dashboardMarkersRef.current[node.id].setLatLng([markerLat, markerLng]);
+            } else {
+              const customMarker = L.circle([markerLat, markerLng], {
+                color: '#00f2fe',
+                fillColor: '#00f2fe',
+                fillOpacity: 0.5,
+                radius: 180
+              }).addTo(map);
+
+              customMarker.bindPopup(`<div style="color:#0f172a; font-family:sans-serif; font-size:11px;">
+                <strong>${node.node_name}</strong><br/>
+                Status: ${node.status}<br/>
+                IP: ${node.ip_address}<br/>
+                Coords: ${markerLat.toFixed(4)}, ${markerLng.toFixed(4)}
+              </div>`);
+
+              dashboardMarkersRef.current[node.id] = customMarker;
+            }
+          });
+        }
+      }, [nodes]);
+
+      const fetchNotifications = async () => {
+        try {
+          const notifResp = await fetch('/api/v1/notifications');
+          if (notifResp.ok) {
+            const notifData = await notifResp.json();
+            setNotifications(notifData);
+          }
+        } catch (ne) {
+          console.log('Notifications fetch skipped', ne);
+        }
+      };
+
+      // 1. Initial Data Fetch & Real-time Alerts Listener (SSE)
+      useEffect(() => {
+        const loadInitData = async () => {
+          try {
+            const nodesResp = await fetch('/api/v1/nodes');
+            if (nodesResp.ok) {
+              const nodesData = await nodesResp.json();
+              setNodes(nodesData);
+            }
+            const alertsResp = await fetch('/api/v1/alerts');
+            if (alertsResp.ok) {
+              const alertsData = await alertsResp.json();
+              setAlerts(alertsData.sort((a,b) => new Date(b.created_at) - new Date(a.created_at)));
+            }
+            await fetchNotifications();
+          } catch (e) {
+            console.log("Offline mode backend fallback");
+            // Set mock nodes if backend offline
+            setNodes([
+              { id: "8f8b030e-56e2-45e3-8f64-98c92a95e0de", node_name: "SolarShield-Edge-01 (Lobby Cam)", mac_address: "00:1A:2B:3C:4D:5E", ip_address: "192.168.1.150", latitude: 23.0225, longitude: 72.5714, status: "ACTIVE", public_key: "MOCK_KEY" }
+            ]);
+          }
+        };
+        loadInitData();
+
+        // Dynamic edge node polling every 5 seconds
+        const pollNodes = async () => {
+          try {
+            const nodesResp = await fetch('/api/v1/nodes');
+            if (nodesResp.ok) {
+              const nodesData = await nodesResp.json();
+              setNodes(prev => {
+                if (JSON.stringify(prev) !== JSON.stringify(nodesData)) {
+                  return nodesData;
+                }
+                return prev;
+              });
+            }
+          } catch (e) {
+            console.log("Error polling edge nodes:", e);
+          }
+        };
+        const nodesInterval = setInterval(pollNodes, 5000);
+
+        // Connect to EventSource (SSE)
+        const eventSource = new EventSource('/api/v1/alerts/feed');
+        eventSource.onopen = () => setConnectionStatus('connected');
+        eventSource.onerror = () => setConnectionStatus('offline');
+        eventSource.onmessage = (event) => {
+          try {
+            const newAlert = JSON.parse(event.data);
+            setAlerts(prev => {
+              const exists = prev.some(a => a.id === newAlert.id);
+              if (exists) {
+                return prev.map(a => a.id === newAlert.id ? newAlert : a);
+              } else {
+                return [newAlert, ...prev];
+              }
+            });
+
+            // Automatically focus on remote bodycam feed when alert is dispatched
+            if (newAlert.status === 'DISPATCHED') {
+              setView('camera');
+              setFeedSource('remote');
+              setSelectedAlert(newAlert);
+            }
+
+            // Revert feed source to local if the currently selected alert is resolved
+            setSelectedAlert(prev => {
+              if (prev && prev.id === newAlert.id) {
+                if (newAlert.status === 'RESOLVED') {
+                  setFeedSource('local');
+                }
+                return newAlert;
+              }
+              return prev;
+            });
+
+            playBuzzerSound();
+            if (newAlert.threat_level === 'CRITICAL') {
+              fetchNotifications();
+            }
+          } catch (e) {
+            console.error("Error reading alert stream:", e);
+          }
+        };
+
+        // Initialize face-api models and WebWorker
+        initFaceAPI();
+        initObjectDetectorWorker();
+
+        return () => {
+          eventSource.close();
+          clearInterval(nodesInterval);
+          stopCamera();
+          if (objectWorkerRef.current) {
+            objectWorkerRef.current.terminate();
+          }
+        };
+      }, []);
+
+      // Clock and Date live updates
+      useEffect(() => {
+        const updateClock = () => {
+          const now = new Date();
+          setLiveTime(now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }));
+          const options = { day: '2-digit', month: 'short', year: 'numeric' };
+          setLiveDate(now.toLocaleDateString('en-GB', options).toUpperCase());
+        };
+        updateClock();
+        const interval = setInterval(updateClock, 1000);
+        return () => clearInterval(interval);
+      }, []);
+
+      // Calculate stats dynamically
+      useEffect(() => {
+        setStats({
+          totalAlerts: alerts.length,
+          unresolvedCount: alerts.filter(a => a.status === 'UNRESOLVED').length,
+          activeNodes: nodes.filter(n => n.status === 'ACTIVE').length,
+          batterySoC: stats.batterySoC
+        });
+      }, [alerts, nodes]);
+
+      // Audio alarm for security threats
+      const playBuzzerSound = () => {
+        try {
+          const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = 'sawtooth';
+          osc.frequency.setValueAtTime(650, audioCtx.currentTime);
+          gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+          osc.connect(gain);
+          gain.connect(audioCtx.destination);
+          osc.start();
+          osc.stop(audioCtx.currentTime + 0.3);
+        } catch (e) {
+          console.log("Audio not supported or interaction blocked");
+        }
+      };
+
+      // 2. Local AI Webcam / FaceAPI Initializer
+      const initFaceAPI = async () => {
+        const MODEL_URL = '/static/models/';
+        try {
+          await Promise.all([
+            faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
+            faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+            faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
+          ]);
+          setModelsLoaded(true);
+          addSystemLog('AI Vision Biometrics Core Online', 'normal');
+          
+          // Feature 2: Try to load face profiles from backend API first
+          let loadedFromBackend = false;
+          try {
+            const faceResp = await fetch('/api/v1/faces');
+            if (faceResp.ok) {
+              const facesData = await faceResp.json();
+              if (facesData.length > 0) {
+                labeledDescriptorsRef.current = facesData.map(data => {
+                  const descArray = data.descriptors.map(d => new Float32Array(d));
+                  const ld = new faceapi.LabeledFaceDescriptors(data.label, descArray);
+                  ld.isWanted = data.is_wanted || false;
+                  return ld;
+                });
+                addSystemLog(`Synced ${facesData.length} profiles from central DB`, 'normal');
+                setDbProfiles(labeledDescriptorsRef.current.map(ld => ({ label: ld.label, isWanted: ld.isWanted })));
+                loadedFromBackend = true;
+              }
+            }
+          } catch (e) {
+            console.log('Backend face sync unavailable, falling back to localStorage');
+          }
+          
+          // Fallback: Load identities from localStorage if backend was empty
+          if (!loadedFromBackend) {
+            const savedData = localStorage.getItem('aegis_faces');
+            if (savedData) {
+              const parsed = JSON.parse(savedData);
+              labeledDescriptorsRef.current = parsed.map(data => {
+                const descArray = data.descriptors.map(d => new Float32Array(Object.values(d)));
+                const ld = new faceapi.LabeledFaceDescriptors(data.label, descArray);
+                ld.isWanted = data.isWanted || false;
+                return ld;
+              });
+              addSystemLog(`Loaded ${labeledDescriptorsRef.current.length} profiles (localStorage)`, 'normal');
+              setDbProfiles(labeledDescriptorsRef.current.map(ld => ({ label: ld.label, isWanted: ld.isWanted })));
+            }
+          }
+          
+          updateFaceMatcher();
+        } catch (err) {
+          console.error("Face-API load error:", err);
+          addSystemLog('Biometrics model load failure', 'alert');
+        }
+      };
+
+      const updateFaceMatcher = () => {
+        const profiles = labeledDescriptorsRef.current;
+        if (profiles.length > 0) {
+          faceMatcherRef.current = new faceapi.FaceMatcher(profiles, 0.60);
+        } else {
+          // Placeholder descriptor
+          faceMatcherRef.current = new faceapi.FaceMatcher([new faceapi.LabeledFaceDescriptors('placeholder', [new Float32Array(128)])], 0.60);
+        }
+      };
+
+      // 3. Web Worker Object Detector (COCO-SSD Weapon Scan)
+      const initObjectDetectorWorker = () => {
+        try {
+          const worker = new Worker('/static/object-detector.js');
+          objectWorkerRef.current = worker;
+          
+          worker.onmessage = (e) => {
+            if (e.data.type === 'ready') {
+              addSystemLog('Edge Weapon Detector Worker online', 'normal');
+            } else if (e.data.type === 'result') {
+              const predictions = e.data.predictions;
+              predictions.forEach(pred => {
+                if (pred.isDangerous) {
+                  triggerConcealedWeaponAlert(pred.class);
+                }
+              });
+            }
+          };
+        } catch (err) {
+          console.error("Worker failed:", err);
+          addSystemLog("Weapon Scanner worker failed to spawn", "alert");
+        }
+      };
+
+      // Retrieve available local cameras
+      const loadVideoDevices = async () => {
+        try {
+          const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
+          tempStream.getTracks().forEach(t => t.stop());
+
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const videoInputs = devices.filter(d => d.kind === 'videoinput');
+          setVideoDevices(videoInputs);
+          if (videoInputs.length > 0 && !selectedDeviceId) {
+            setSelectedDeviceId(videoInputs[0].deviceId);
+          }
+        } catch (e) {
+          console.warn("Failed to list camera devices:", e);
+        }
+      };
+
+      useEffect(() => {
+        loadVideoDevices();
+      }, []);
+
+      // Restart camera stream if it's active and device changes
+      useEffect(() => {
+        const restartCameraIfActive = async () => {
+          if (cameraActive && selectedDeviceId) {
+            if (streamRef.current) {
+              streamRef.current.getTracks().forEach(track => track.stop());
+            }
+            try {
+              const constraints = { video: { deviceId: { exact: selectedDeviceId }, width: 640, height: 480 } };
+              const stream = await navigator.mediaDevices.getUserMedia(constraints);
+              streamRef.current = stream;
+              if (videoRef.current) {
+                videoRef.current.srcObject = stream;
+                videoRef.current.onloadedmetadata = () => videoRef.current.play().catch(e => console.log("Video play error:", e));
+              }
+              addSystemLog("Edge Camera device switched", "normal");
+            } catch (err) {
+              console.error(err);
+              addSystemLog("Failed to switch camera device", "alert");
+            }
+          }
+        };
+        restartCameraIfActive();
+      }, [selectedDeviceId]);
+
+      // Sync stream to video element when camera becomes active
+      useEffect(() => {
+        if (cameraActive && streamRef.current && videoRef.current) {
+          videoRef.current.srcObject = streamRef.current;
+          videoRef.current.play().catch(e => console.log("Video play error on sync:", e));
+        }
+      }, [cameraActive]);
+
+      // WebSocket Bodycam Stream Listener
+      useEffect(() => {
+        if (feedSource !== 'remote') {
+          setRemoteFrame(null);
+          return;
+        }
+
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = window.location.host || 'localhost:8000';
+        const wsUrl = `${protocol}//${host}/api/v1/bodycam/stream`;
+        
+        console.log("Dashboard connecting to bodycam stream:", wsUrl);
+        addSystemLog("Connecting to remote bodycam stream...", "normal");
+        const ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+          console.log("Remote bodycam listener connected");
+          addSystemLog("Link established: Remote bodycam stream connected", "normal");
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.image) {
+              setRemoteFrame(data.image);
+            }
+          } catch (e) {
+            if (event.data.startsWith('data:image')) {
+              setRemoteFrame(event.data);
+            }
+          }
+        };
+
+        ws.onerror = (e) => {
+          console.error("Remote stream socket error:", e);
+          addSystemLog("Remote bodycam stream connection error", "alert");
+        };
+
+        ws.onclose = () => {
+          console.log("Remote bodycam stream disconnected");
+          addSystemLog("Link lost: Remote bodycam stream disconnected", "alert");
+        };
+
+        return () => {
+          ws.close();
+        };
+      }, [feedSource]);
+
+      // WebSocket CCTV Broadcaster (Streams local dashboard camera feed to mobile officers)
+      useEffect(() => {
+        if (!cameraActive || feedSource !== 'local') return;
+
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = window.location.host || 'localhost:8000';
+        const wsUrl = `${protocol}//${host}/api/v1/bodycam/stream`;
+        
+        console.log("CCTV Node broadcasting to WebSocket:", wsUrl);
+        const ws = new WebSocket(wsUrl);
+
+        const canvas = document.createElement('canvas');
+        canvas.width = 400;
+        canvas.height = 300;
+        const ctx = canvas.getContext('2d');
+
+        const intervalId = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            try {
+              if (videoRef.current && videoRef.current.videoWidth > 0) {
+                // Real webcam frame capture
+                ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.4);
+                const payload = {
+                  node_id: "SolarShield-Edge-01",
+                  image: dataUrl,
+                  timestamp: new Date().toISOString()
+                };
+                ws.send(JSON.stringify(payload));
+              }
+            } catch (e) {
+              console.error("CCTV broadcast frame error:", e);
+            }
+          }
+        }, 200); // 5 FPS
+
+        return () => {
+          clearInterval(intervalId);
+          ws.close();
+        };
+      }, [cameraActive, feedSource]);
+
+      // 4. Start / Stop Camera Feed
+      const toggleCamera = async () => {
+        if (cameraActive) {
+          stopCamera();
+        } else {
+          try {
+            const constraints = selectedDeviceId 
+              ? { video: { deviceId: { exact: selectedDeviceId }, width: 640, height: 480 } }
+              : { video: { width: 640, height: 480 } };
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            streamRef.current = stream;
+            if (videoRef.current) {
+              videoRef.current.srcObject = stream;
+              videoRef.current.onloadedmetadata = () => videoRef.current.play().catch(e => console.log("Video play error:", e));
+            }
+            setCameraActive(true);
+            addSystemLog("Edge Camera Feed initialized", "normal");
+          } catch (err) {
+            console.error(err);
+            addSystemLog("Camera permission denied", "alert");
+          }
+        }
+      };
+
+      const stopCamera = () => {
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach(track => track.stop());
+          streamRef.current = null;
+        }
+        if (videoRef.current) {
+          videoRef.current.srcObject = null;
+        }
+        setCameraActive(false);
+        setFaceMatchStatus('SCANNING...');
+        setConfidence(0);
+      };
+
+      // 5. Detection Processing Loop (Webcam Frame Loop)
+      useEffect(() => {
+        let active = true;
+        let detectionTimeout;
+
+        const processFrames = async () => {
+          if (!modelsLoaded || !active) return;
+          
+          if (feedSource === 'local' && (!cameraActive || !videoRef.current)) {
+            detectionTimeout = setTimeout(processFrames, 500);
+            return;
+          }
+          if (feedSource === 'remote' && (!remoteFrame || !remoteImgRef.current)) {
+            detectionTimeout = setTimeout(processFrames, 500);
+            return;
+          }
+
+          if (isScanningBiometricsRef.current || !faceMatcherRef.current) {
+            detectionTimeout = setTimeout(processFrames, 500);
+            return;
+          }
+
+          const source = feedSource === 'local' ? videoRef.current : remoteImgRef.current;
+          if (!source) {
+            detectionTimeout = setTimeout(processFrames, 500);
+            return;
+          }
+
+          if (feedSource === 'local' && (source.paused || source.ended || source.videoWidth === 0)) {
+            detectionTimeout = setTimeout(processFrames, 800);
+            return;
+          }
+          if (feedSource === 'remote' && source.naturalWidth === 0) {
+            detectionTimeout = setTimeout(processFrames, 800);
+            return;
+          }
+
+          const canvas = canvasRef.current;
+          const sourceWidth = feedSource === 'local' ? source.videoWidth : source.naturalWidth;
+          const sourceHeight = feedSource === 'local' ? source.videoHeight : source.naturalHeight;
+
+          if (canvas) {
+            canvas.width = sourceWidth;
+            canvas.height = sourceHeight;
+          }
+
+          try {
+            // Detect faces
+            const detections = await faceapi.detectAllFaces(source).withFaceLandmarks().withFaceDescriptors();
+            
+            // Draw overlays on canvas
+            if (canvas && detections.length > 0) {
+              const ctx = canvas.getContext('2d');
+              ctx.clearRect(0, 0, canvas.width, canvas.height);
+              
+              const resizedResults = faceapi.resizeResults(detections, { width: canvas.width, height: canvas.height });
+              let matchFound = false;
+              let matchName = 'UNKNOWN';
+              let matchConfVal = 0;
+
+              resizedResults.forEach(det => {
+                const match = faceMatcherRef.current.findBestMatch(det.descriptor);
+                const box = det.detection.box;
+                const distPercent = Math.round((1 - match.distance) * 100);
+
+                let isUnknown = match.label === 'unknown' || match.label === 'placeholder';
+                const profile = labeledDescriptorsRef.current.find(ld => ld.label === match.label);
+                const isWanted = profile && profile.isWanted;
+
+                const isThreat = isUnknown || isWanted;
+                ctx.strokeStyle = isThreat ? '#ef4444' : '#10b981';
+                ctx.fillStyle = isThreat ? '#ef4444' : '#10b981';
+                ctx.lineWidth = 3;
+
+                // Draw bounding box
+                ctx.strokeRect(box.x, box.y, box.width, box.height);
+
+                // Draw text tag
+                ctx.font = 'bold 14px Inter, sans-serif';
+                let label = '';
+                if (isUnknown) {
+                  label = `UNKNOWN SUSPECT [${distPercent}%]`;
+                } else if (isWanted) {
+                  label = `WANTED CRIMINAL: ${match.label} [${distPercent}%]`;
+                } else {
+                  label = `${match.label} [${distPercent}%]`;
+                }
+                const textWidth = ctx.measureText(label).width;
+                const rectWidth = textWidth + 12;
+                ctx.fillRect(box.x - 1, box.y - 25, rectWidth, 25);
+                
+                ctx.save();
+                ctx.fillStyle = '#ffffff';
+                ctx.translate(box.x + rectWidth - 6, box.y - 7);
+                ctx.scale(-1, 1);
+                ctx.fillText(label, 0, 0);
+                ctx.restore();
+
+                if (isWanted) {
+                  matchFound = true;
+                  matchName = `WANTED: ${match.label}`;
+                  matchConfVal = distPercent;
+                  triggerWantedSuspectAlert(match.label, distPercent);
+                } else if (!isUnknown) {
+                  matchFound = true;
+                  matchName = match.label;
+                  matchConfVal = distPercent;
+                } else if (isUnknown) {
+                  if (matchConfVal === 0) {
+                    matchConfVal = distPercent;
+                  }
+                  
+                  // Throttled unknown suspect warning
+                  const now = Date.now();
+                  if (now - lastAlertedUnknownRef.current > 45000) {
+                    lastAlertedUnknownRef.current = now;
+                    triggerUnknownFaceAlert();
+                  }
+                }
+
+              });
+
+              if (matchFound) {
+                setFaceMatchStatus(matchName);
+                setConfidence(matchConfVal);
+              } else {
+                setFaceMatchStatus('UNKNOWN');
+                setConfidence(matchConfVal);
+              }
+            } else {
+              setFaceMatchStatus('SCANNING...');
+              setConfidence(0);
+            }
+
+            // Post frame to Weapon Detector Worker
+            if (objectWorkerRef.current && sourceIsRunning()) {
+              const hiddenCanvas = document.createElement('canvas');
+              hiddenCanvas.width = 416;
+              hiddenCanvas.height = 416;
+              const hiddenCtx = hiddenCanvas.getContext('2d');
+              hiddenCtx.drawImage(source, 0, 0, 416, 416);
+              const imgData = hiddenCtx.getImageData(0, 0, 416, 416);
+              objectWorkerRef.current.postMessage({ type: 'detect', imageData: imgData });
+            }
+
+          } catch (e) {
+            console.error("Frame evaluation failed:", e);
+          }
+
+          detectionTimeout = setTimeout(processFrames, 500); // 2 FPS detection rate
+        };
+
+        const sourceIsRunning = () => {
+          if (feedSource === 'local') {
+            return videoRef.current && videoRef.current.videoWidth > 0;
+          } else {
+            return remoteImgRef.current && remoteImgRef.current.naturalWidth > 0;
+          }
+        };
+
+        if (cameraActive || feedSource === 'remote') {
+          processFrames();
+        }
+
+        return () => {
+          active = false;
+          clearTimeout(detectionTimeout);
+        };
+      }, [cameraActive, feedSource, remoteFrame, modelsLoaded]);
+
+      // 6a. Identity Webcam Enrollment
+      const enrollNewFace = async () => {
+        if (!enrollName.trim()) {
+          addSystemLog("Enrollment failed: Name field empty", "alert");
+          return;
+        }
+        if (!cameraActive || !videoRef.current) {
+          addSystemLog("Enrollment failed: Edge Camera Offline", "alert");
+          return;
+        }
+
+        setScanningBiometrics(true);
+        addSystemLog("Scanning biometrics... Keep still", "normal");
+        try {
+          // Wait briefly for any ongoing background frame analysis to complete
+          await new Promise(r => setTimeout(r, 200));
+
+          let face = null;
+          for (let i = 0; i < 5; i++) {
+            const detections = await faceapi.detectAllFaces(videoRef.current).withFaceLandmarks().withFaceDescriptors();
+            if (detections && detections.length > 0) {
+              face = detections.reduce((prev, curr) => (prev.detection.box.width > curr.detection.box.width) ? prev : curr);
+              break;
+            }
+            await new Promise(r => setTimeout(r, 250));
+          }
+
+          if (face) {
+            const newDescriptor = new faceapi.LabeledFaceDescriptors(enrollName.toUpperCase(), [face.descriptor]);
+            newDescriptor.isWanted = enrollIsWanted;
+            labeledDescriptorsRef.current.push(newDescriptor);
+            
+            // Save to browser memory
+            const toSave = labeledDescriptorsRef.current.map(ld => ({
+              label: ld.label,
+              isWanted: ld.isWanted || false,
+              descriptors: ld.descriptors.map(d => Array.from(d))
+            }));
+            localStorage.setItem('aegis_faces', JSON.stringify(toSave));
+            
+            // Feature 2: Sync to backend central DB
+            try {
+              await fetch('/api/v1/faces/enroll', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  label: enrollName.toUpperCase(),
+                  is_wanted: enrollIsWanted,
+                  descriptors: [Array.from(face.descriptor)]
+                })
+              });
+              addSystemLog(`Profile synced to central DB: ${enrollName.toUpperCase()}`, "normal");
+            } catch (syncErr) {
+              console.warn('Backend face sync failed:', syncErr);
+            }
+            
+            updateFaceMatcher();
+            setDbProfiles(labeledDescriptorsRef.current.map(ld => ({ label: ld.label, isWanted: ld.isWanted })));
+            addSystemLog(`Registered identity: ${enrollName.toUpperCase()}`, "normal");
+            setEnrollName('');
+            setEnrollIsWanted(false);
+          } else {
+            addSystemLog("No biometric face data detected after 5 scans", "alert");
+          }
+        } catch (err) {
+          console.error(err);
+          addSystemLog("Biometrics registration failed", "alert");
+        } finally {
+          setScanningBiometrics(false);
+        }
+      };
+
+      // 6b. Identity Photo Upload Enrollment
+      const enrollFromPhoto = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        if (!enrollName.trim()) {
+          addSystemLog("Enrollment failed: Enter profile name first", "alert");
+          e.target.value = '';
+          return;
+        }
+
+        setScanningBiometrics(true);
+        addSystemLog("Analyzing uploaded profile photo...", "normal");
+        try {
+          // Create image element from file
+          const img = await faceapi.bufferToImage(file);
+          const detections = await faceapi.detectAllFaces(img).withFaceLandmarks().withFaceDescriptors();
+
+          if (detections && detections.length > 0) {
+            const largestFace = detections.reduce((prev, curr) => (prev.detection.box.width > curr.detection.box.width) ? prev : curr);
+            
+            const newDescriptor = new faceapi.LabeledFaceDescriptors(enrollName.toUpperCase(), [largestFace.descriptor]);
+            newDescriptor.isWanted = enrollIsWanted;
+            labeledDescriptorsRef.current.push(newDescriptor);
+            
+            // Save to browser memory
+            const toSave = labeledDescriptorsRef.current.map(ld => ({
+              label: ld.label,
+              isWanted: ld.isWanted || false,
+              descriptors: ld.descriptors.map(d => Array.from(d))
+            }));
+            localStorage.setItem('aegis_faces', JSON.stringify(toSave));
+            
+            // Feature 2: Sync to backend central DB
+            try {
+              await fetch('/api/v1/faces/enroll', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  label: enrollName.toUpperCase(),
+                  is_wanted: enrollIsWanted,
+                  descriptors: [Array.from(largestFace.descriptor)]
+                })
+              });
+              addSystemLog(`Profile synced to central DB: ${enrollName.toUpperCase()}`, "normal");
+            } catch (syncErr) {
+              console.warn('Backend face sync failed:', syncErr);
+            }
+            
+            updateFaceMatcher();
+            setDbProfiles(labeledDescriptorsRef.current.map(ld => ({ label: ld.label, isWanted: ld.isWanted })));
+            addSystemLog(`Registered identity (Photo): ${enrollName.toUpperCase()}`, "normal");
+            setEnrollName('');
+            setEnrollIsWanted(false);
+          } else {
+            addSystemLog("No face detected in the uploaded photo", "alert");
+          }
+        } catch (err) {
+          console.error(err);
+          addSystemLog("Photo face registration failed", "alert");
+        } finally {
+          setScanningBiometrics(false);
+          e.target.value = ''; // Reset file input element
+        }
+      };
+
+      // 6c. Delete Registry Profile
+      const deleteProfile = async (label) => {
+        labeledDescriptorsRef.current = labeledDescriptorsRef.current.filter(ld => ld.label !== label);
+        
+        // Save to browser memory
+        const toSave = labeledDescriptorsRef.current.map(ld => ({
+          label: ld.label,
+          isWanted: ld.isWanted || false,
+          descriptors: ld.descriptors.map(d => Array.from(d))
+        }));
+        localStorage.setItem('aegis_faces', JSON.stringify(toSave));
+        
+        // Feature 2: Delete from backend central DB
+        try {
+          await fetch(`/api/v1/faces/${label}`, { method: 'DELETE' });
+          addSystemLog(`Profile removed from central DB: ${label}`, "normal");
+        } catch (syncErr) {
+          console.warn('Backend face delete failed:', syncErr);
+        }
+        
+        updateFaceMatcher();
+        setDbProfiles(labeledDescriptorsRef.current.map(ld => ({ label: ld.label, isWanted: ld.isWanted })));
+        addSystemLog(`Deleted profile: ${label}`, "normal");
+      };
+
+      // 7. Backend Alert Reporters
+      const reportIncidentToCentralNode = async (type, threat, details) => {
+        // Use the registered camera node (or fallback to a static UUID)
+        const activeNode = nodes[0];
+        const virtualNodeId = activeNode?.id || "bf0a85b9-4949-474b-9476-c353e8adb38d";
+        
+        // Report coordinates of the reporting Camera node (falling back to browser location)
+        const alertLat = activeNode ? activeNode.latitude : userCoordsRef.current.latitude;
+        const alertLng = activeNode ? activeNode.longitude : userCoordsRef.current.longitude;
+
+        try {
+          const resp = await fetch('/api/v1/alerts/trigger', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              node_id: virtualNodeId,
+              alert_type: type,
+              threat_level: threat,
+              image_url: details.image || "https://images.unsplash.com/photo-1595590424283-b8f17842773f?w=600",
+              payload: details,
+              latitude: alertLat,
+              longitude: alertLng,
+              signature: "MOCK_SIGNATURE_OK"
+            })
+          });
+          const createdAlert = await resp.json();
+          setAlerts(prev => [createdAlert, ...prev]);
+          if (createdAlert.threat_level === 'CRITICAL') {
+            fetchNotifications();
+          }
+        } catch (e) {
+          // Offline mock update
+          const mockAlert = {
+            id: Math.random().toString(),
+            node_id: virtualNodeId,
+            alert_type: type,
+            threat_level: threat,
+            image_url: details.image || "https://images.unsplash.com/photo-1595590424283-b8f17842773f?w=600",
+            payload: details,
+            latitude: alertLat,
+            longitude: alertLng,
+            status: "UNRESOLVED",
+            created_at: new Date().toISOString()
+          };
+          setAlerts(prev => [mockAlert, ...prev]);
+        }
+      };
+
+      const triggerConcealedWeaponAlert = (weaponClass = "firearm") => {
+        addSystemLog(`CRITICAL WEAPON DETECTION: ${weaponClass.toUpperCase()}`, 'alert');
+        reportIncidentToCentralNode("WEAPON", "CRITICAL", {
+          weapon: weaponClass,
+          confidence: 0.98,
+          source: "Edge Optical Camera"
+        });
+        playBuzzerSound();
+      };
+
+      const triggerUnknownFaceAlert = () => {
+        addSystemLog('Unknown suspect matched against DB records', 'alert');
+        playBuzzerSound();
+        reportIncidentToCentralNode("CRIMINAL_MATCH", "HIGH", {
+          suspect: "Unknown face detected on camera",
+          confidence: 0.88
+        });
+      };
+
+      const triggerWantedSuspectAlert = (name, conf) => {
+        const now = Date.now();
+        const lastTime = lastAlertedSuspectsRef.current[name] || 0;
+        // Throttle dispatch reporting to once every 30 seconds per suspect
+        if (now - lastTime < 30000) return;
+        
+        lastAlertedSuspectsRef.current[name] = now;
+        addSystemLog(`CRITICAL WANTED SUSPECT MATCHED: ${name}`, 'alert');
+        playBuzzerSound();
+        
+        reportIncidentToCentralNode("CRIMINAL_MATCH", "CRITICAL", {
+          suspect: `Wanted blacklisted suspect identified: ${name}`,
+          confidence: conf / 100,
+          details: `Matching similarity index is ${conf}%`
+        });
+      };
+
+      const handleUpdateAlertStatus = async (alertId, newStatus) => {
+        let dispatchWindow = null;
+        if (newStatus === 'DISPATCHED') {
+          // Open a blank window synchronously inside the click handler to bypass browser popup blocker
+          dispatchWindow = window.open('about:blank', 'PoliceMobileApp', 'width=380,height=820,resizable=yes,scrollbars=yes');
+          setView('camera');
+          setFeedSource('remote');
+        }
+        try {
+          const resp = await fetch(`/api/v1/alerts/${alertId}/status`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: newStatus })
+          });
+          if (!resp.ok) {
+            throw new Error(`HTTP error! status: ${resp.status}`);
+          }
+          const updated = await resp.json();
+          setAlerts(prev => prev.map(a => a.id === alertId ? { ...a, status: updated.status } : a));
+          if (selectedAlert && selectedAlert.id === alertId) {
+            setSelectedAlert(prev => ({ ...prev, status: updated.status }));
+          }
+          
+          if (newStatus === 'DISPATCHED' && dispatchWindow) {
+            dispatchWindow.location.href = `/static/mobile.html?alert_id=${alertId}`;
+          }
+        } catch (e) {
+          console.error("Alert status update failed, falling back locally:", e);
+          // Local offline update
+          setAlerts(prev => prev.map(a => a.id === alertId ? { ...a, status: newStatus } : a));
+          if (selectedAlert && selectedAlert.id === alertId) {
+            setSelectedAlert(prev => ({ ...prev, status: newStatus }));
+          }
+          
+          if (newStatus === 'DISPATCHED' && dispatchWindow) {
+            dispatchWindow.location.href = `/static/mobile.html?alert_id=${alertId}`;
+          }
+        }
+      };
+
+      // System Log helper
+      const addSystemLog = (msg, type) => {
+        const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false });
+        setSystemLogs(prev => [{ time: timestamp, msg, type }, ...prev.slice(0, 4)]);
+      };
+
+      // Export PDF Log Report
+      const exportIncidentReportPDF = () => {
+        try {
+          const { jsPDF } = window.jspdf;
+          const doc = new jsPDF();
+          doc.setFont("courier", "bold");
+          doc.setFontSize(22);
+          doc.setTextColor(0, 150, 150);
+          doc.text("AEGIS NEXUS: OFFICIAL SURVEILLANCE REPORT", 10, 20);
+          
+          doc.setFontSize(10);
+          doc.setTextColor(100, 100, 100);
+          doc.text(`Incident Database Export | Timestamp: ${new Date().toLocaleString()}`, 10, 28);
+          
+          let y = 45;
+          alerts.forEach((alert, idx) => {
+            if (y > 270) {
+              doc.addPage();
+              y = 20;
+            }
+            doc.setTextColor(alert.threat_level === 'CRITICAL' ? 220 : 30, 30, 30);
+            doc.text(`${idx + 1}. [${new Date(alert.created_at).toLocaleTimeString()}] ${alert.alert_type} - THREAT: ${alert.threat_level}`, 10, y);
+            doc.setFont("courier", "normal");
+            doc.text(`   Status: ${alert.status} | Details: ${JSON.stringify(alert.payload)}`, 10, y + 5);
+            doc.setFont("courier", "bold");
+            y += 14;
+          });
+          doc.save("Aegis_Security_Incident_Report.pdf");
+          addSystemLog("Incident report PDF exported", "normal");
+        } catch (err) {
+          console.error("PDF Export error:", err);
+          addSystemLog("Failed to generate PDF", "alert");
+        }
+      };
+
+      // Key binding listener for keyboard simulation
+      useEffect(() => {
+        const handleKeyDown = (e) => {
+          if (e.key.toLowerCase() === 'w') {
+            triggerConcealedWeaponAlert("Handgun (Simulated)");
+          }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+      }, [nodes]);
+
+      // CSS helpers
+      const getThreatBadgeColor = (level) => {
+        switch (level) {
+          case 'CRITICAL': return 'bg-red-950/60 text-red-400 border-red-500/50';
+          case 'HIGH': return 'bg-orange-950/60 text-orange-400 border-orange-500/50';
+          case 'MEDIUM': return 'bg-yellow-950/60 text-yellow-400 border-yellow-500/50';
+          default: return 'bg-blue-950/60 text-blue-400 border-blue-500/50';
+        }
+      };
+
+      const getStatusBadgeClass = (status) => {
+        switch (status) {
+          case 'RESOLVED': return 'bg-emerald-950/80 text-emerald-400 border border-emerald-500/30';
+          case 'DISPATCHED': return 'bg-blue-950/80 text-blue-400 border border-brand-500/30';
+          case 'ACKNOWLEDGED': return 'bg-purple-950/80 text-purple-400 border border-purple-500/30';
+          default: return 'bg-red-950/80 text-red-400 border border-red-500/40 animate-pulse';
+        }
+      };
+
+      return (
+        <div className="max-w-[1600px] mx-auto flex flex-col gap-6">
+          
+          {/* HEADER STATUS PANEL */}
+          <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-cyan-500/30 pb-5">
+            <div>
+              <div className="flex items-center gap-3">
+                <div className="relative w-8 h-8 rounded-full bg-cyan-500 flex items-center justify-center shadow-[0_0_15px_rgba(6,182,212,0.4)]">
+                  <i className="fa-solid fa-shield-halved text-slate-950"></i>
+                </div>
+                <h1 className="text-3xl font-extrabold tracking-wider bg-clip-text text-transparent bg-gradient-to-r from-white via-cyan-400 to-sky-500 uppercase">
+                  Aegis Nexus <span className="text-cyan-400 font-light">SolarShield</span>
+                </h1>
+              </div>
+              <p className="text-gray-400 text-xs mt-1 tracking-wider uppercase font-mono">INTEGRATED RENEWABLE AI COMMAND DASHBOARD</p>
+            </div>
+            
+            <div className="flex items-center gap-3 font-mono">
+              <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold glass-panel border ${
+                connectionStatus === 'connected' ? 'text-cyan-400 border-cyan-500/30' : 'text-rose-500 border-rose-500/30'
+              }`}>
+                <span className={`w-2 h-2 rounded-full ${connectionStatus === 'connected' ? 'bg-cyan-400 animate-pulse' : 'bg-rose-500'}`}></span>
+                {connectionStatus === 'connected' ? 'UPLINK: ONLINE' : 'UPLINK: OFFLINE'}
+              </div>
+              <div className="text-xs text-gray-400 bg-slate-950/40 px-3 py-1.5 rounded-lg border border-slate-800">
+                DATE: {liveDate || 'LOADING...'}
+              </div>
+              <div className="text-xs text-cyan-400 bg-slate-950/40 px-3 py-1.5 rounded-lg border border-cyan-500/30 font-bold font-mono">
+                TIME: {liveTime || '00:00:00'}
+              </div>
+            </div>
+          </header>
+
+          {/* SIDEBAR NAVIGATION GRID */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+            
+            {/* SIDEBAR NAVIGATION CONTROLS (3 cols) */}
+            <div className="lg:col-span-3 flex flex-col gap-4">
+              <div className="glass-panel p-4 rounded-xl flex flex-col gap-2.5 hud-box">
+                <div className="hud-corner corner-tl"></div><div className="hud-corner corner-tr"></div>
+                <div className="hud-corner corner-bl"></div><div className="hud-corner corner-br"></div>
+                
+                <h3 className="text-xs uppercase font-mono text-cyan-400 tracking-widest mb-1">Navigation System</h3>
+                <button 
+                  onClick={() => setView('command')} 
+                  className={`w-full text-left py-2.5 px-4 rounded-lg text-sm font-semibold transition-all cyber-btn flex items-center justify-between ${
+                    view === 'command' ? 'active' : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  <span><i className="fa-solid fa-desktop mr-2 text-cyan-500"></i> Central Command Grid</span>
+                  <i className="fa-solid fa-angle-right text-xs"></i>
+                </button>
+                <button 
+                  onClick={() => setView('camera')} 
+                  className={`w-full text-left py-2.5 px-4 rounded-lg text-sm font-semibold transition-all cyber-btn flex items-center justify-between ${
+                    view === 'camera' ? 'active' : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  <span><i className="fa-solid fa-face-viewfinder mr-2 text-purple-400"></i> Edge Biometric Scanner</span>
+                  <i className="fa-solid fa-angle-right text-xs"></i>
+                </button>
+                <button 
+                  onClick={() => setView('solar')} 
+                  className={`w-full text-left py-2.5 px-4 rounded-lg text-sm font-semibold transition-all cyber-btn flex items-center justify-between ${
+                    view === 'solar' ? 'active' : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  <span><i className="fa-solid fa-solar-panel mr-2 text-green-400"></i> Solar Energy Hub</span>
+                  <i className="fa-solid fa-angle-right text-xs"></i>
+                </button>
+              </div>
+
+              {/* LIVE TELEMETRY WIDGET */}
+              <div className="glass-panel p-4 rounded-xl flex flex-col gap-2 hud-box font-mono">
+                <div className="hud-corner corner-tl"></div><div className="hud-corner corner-tr"></div>
+                <div className="hud-corner corner-bl"></div><div className="hud-corner corner-br"></div>
+                <h3 className="text-[10px] uppercase text-cyan-400 tracking-wider font-semibold">Active Node Diagnostics</h3>
+                
+                <div className="flex justify-between text-xs mt-1 border-b border-slate-800 pb-1.5">
+                  <span className="text-gray-400">Edge CPU Load:</span>
+                  <span className="text-slate-200">54%</span>
+                </div>
+                <div className="flex justify-between text-xs border-b border-slate-800 pb-1.5">
+                  <span className="text-gray-400">Battery SoC:</span>
+                  <span className="text-emerald-400">92% (CHARGING)</span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="text-gray-400">Edge Temp:</span>
+                  <span className="text-amber-500">51.0 °C</span>
+                </div>
+              </div>
+
+              {/* RECENT THREAT LOGS FEED */}
+              <div className="glass-panel p-4 rounded-xl flex flex-col gap-2.5 hud-box">
+                <div className="hud-corner corner-tl"></div><div className="hud-corner corner-tr"></div>
+                <div className="hud-corner corner-bl"></div><div className="hud-corner corner-br"></div>
+                <div className="flex justify-between items-center border-b border-slate-800 pb-2 mb-1">
+                  <h3 className="text-xs uppercase font-mono text-cyan-400 tracking-wider font-semibold">Threat Intel Feed</h3>
+                  <button onClick={exportIncidentReportPDF} className="text-[10px] bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-400 py-1 px-2.5 rounded-lg flex items-center gap-1 font-mono">
+                    <i className="fa-solid fa-file-pdf"></i> PDF
+                  </button>
+                </div>
+                <div className="flex flex-col gap-2 max-h-[220px] overflow-y-auto">
+                  {alerts.slice(0, 4).map(alert => (
+                    <div key={alert.id} onClick={() => setSelectedAlert(alert)} className="text-[10px] p-2 glass-card rounded-lg border border-slate-850 cursor-pointer hover:bg-slate-900/40">
+                      <div className="flex justify-between font-mono">
+                        <span className="text-red-400 font-bold">{alert.alert_type}</span>
+                        <span className="text-gray-500">{new Date(alert.created_at).toLocaleTimeString()}</span>
+                      </div>
+                      <p className="text-slate-300 mt-1 truncate">{alert.payload.weapon || alert.payload.suspect || "Incident alert logged"}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* MAIN CONTAINER PANEL (9 cols) */}
+            <div className="lg:col-span-9 flex flex-col gap-6">
+
+              {/* VIEW 1: CENTRAL COMMAND CENTER */}
+              {view === 'command' && (
+                <div className="flex flex-col gap-6">
+                  {/* Stats Row */}
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="glass-panel p-4 rounded-xl flex items-center justify-between hud-box">
+                      <div className="hud-corner corner-tl"></div><div className="hud-corner corner-tr"></div>
+                      <div className="hud-corner corner-bl"></div><div className="hud-corner corner-br"></div>
+                      <div>
+                        <p className="text-[10px] uppercase font-mono tracking-wider text-gray-400">Total Alerts</p>
+                        <h4 className="text-2xl font-bold text-slate-100 mt-0.5">{stats.totalAlerts}</h4>
+                      </div>
+                      <i className="fa-solid fa-chart-line text-brand-400 text-xl"></i>
+                    </div>
+
+                    <div className="glass-panel p-4 rounded-xl flex items-center justify-between hud-box">
+                      <div className="hud-corner corner-tl"></div><div className="hud-corner corner-tr"></div>
+                      <div className="hud-corner corner-bl"></div><div className="hud-corner corner-br"></div>
+                      <div>
+                        <p className="text-[10px] uppercase font-mono tracking-wider text-gray-400">Unresolved</p>
+                        <h4 className="text-2xl font-bold text-rose-400 mt-0.5">{stats.unresolvedCount}</h4>
+                      </div>
+                      <i className="fa-solid fa-triangle-exclamation text-rose-500 text-xl animate-pulse"></i>
+                    </div>
+
+                    <div className="glass-panel p-4 rounded-xl flex items-center justify-between hud-box">
+                      <div className="hud-corner corner-tl"></div><div className="hud-corner corner-tr"></div>
+                      <div className="hud-corner corner-bl"></div><div className="hud-corner corner-br"></div>
+                      <div>
+                        <p className="text-[10px] uppercase font-mono tracking-wider text-gray-400">Edge Nodes</p>
+                        <h4 className="text-2xl font-bold text-emerald-400 mt-0.5">{stats.activeNodes} / {nodes.length || 1}</h4>
+                      </div>
+                      <i className="fa-solid fa-server text-emerald-500 text-xl"></i>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+                    
+                    {/* Event Ingestion List */}
+                    <div className="glass-panel p-4 rounded-2xl flex flex-col gap-3 max-h-[440px] overflow-y-auto hud-box">
+                      <div className="hud-corner corner-tl"></div><div className="hud-corner corner-tr"></div>
+                      <div className="hud-corner corner-bl"></div><div className="hud-corner corner-br"></div>
+                      <h3 className="text-base font-bold text-slate-200">Incident Registry</h3>
+                      
+                      {alerts.length === 0 ? (
+                        <div className="text-center py-12 text-gray-500 text-sm font-mono">Awaiting edge node telemetry broadcasts...</div>
+                      ) : (
+                        alerts.map(alert => (
+                          <div 
+                            key={alert.id}
+                            onClick={() => setSelectedAlert(alert)}
+                            className={`p-3 rounded-lg glass-card border transition-all cursor-pointer hover:bg-slate-900/30 flex flex-col gap-1.5 ${
+                              selectedAlert && selectedAlert.id === alert.id ? 'border-cyan-400/80 bg-slate-900/40' : 'border-slate-800'
+                            }`}
+                          >
+                            <div className="flex justify-between items-center text-xs">
+                              <span className={`px-2 py-0.5 rounded text-[9px] font-bold tracking-wider ${getThreatBadgeColor(alert.threat_level)}`}>
+                                {alert.alert_type}
+                              </span>
+                              <span className="text-[10px] text-gray-500 font-mono">
+                                {new Date(alert.created_at).toLocaleTimeString()}
+                              </span>
+                            </div>
+                            
+                            <p className="text-xs text-slate-300 font-semibold truncate">
+                              {alert.payload.weapon || alert.payload.suspect || alert.payload.type || "System Incident Alert"}
+                            </p>
+                            
+                            <div className="flex justify-between items-center border-t border-slate-800/60 pt-1.5 mt-1 font-mono text-[9px] text-gray-500">
+                              <span>NODE: {alert.node_id.slice(0, 8)}...</span>
+                              <span className={`px-1.5 py-0.5 rounded ${getStatusBadgeClass(alert.status)}`}>
+                                {alert.status}
+                              </span>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+
+                    {/* Incident Investigator detail & mockup Map */}
+                    <div className="flex flex-col gap-6">
+                      {/* Map Area */}
+                      {/* Map Area */}
+                      <div id="dashboard-map" className="relative shadow-inner z-10"></div>
+
+                      {/* Detail Action box */}
+                      {selectedAlert ? (
+                        <div className="glass-panel p-4 rounded-2xl flex flex-col gap-3 border border-cyan-400/20 relative hud-box">
+                          <div className="hud-corner corner-tl"></div><div className="hud-corner corner-tr"></div>
+                          <div className="hud-corner corner-bl"></div><div className="hud-corner corner-br"></div>
+                          <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                            <h4 className="text-sm font-bold text-slate-200">Incident Details</h4>
+                            <button onClick={() => setSelectedAlert(null)} className="text-[10px] text-cyan-400 hover:text-white font-mono bg-slate-900 border border-slate-800 py-1 px-2.5 rounded">
+                              DISMISS
+                            </button>
+                          </div>
+                          
+                          <div className="flex flex-col gap-1.5 text-xs">
+                            <div className="flex justify-between">
+                              <span className="text-gray-400">Classification:</span>
+                              <span className="text-slate-200 font-bold font-mono">{selectedAlert.alert_type}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-gray-400">Risk Matrix:</span>
+                              <span className={`font-bold font-mono ${selectedAlert.threat_level === 'CRITICAL' ? 'text-red-400' : 'text-amber-400'}`}>
+                                {selectedAlert.threat_level}
+                              </span>
+                            </div>
+                            <div className="flex flex-col gap-1 mt-1 bg-slate-950/40 p-2 rounded-lg border border-slate-800">
+                              <span className="text-[9px] text-gray-500 font-mono">METADATA PAYLOAD</span>
+                              <pre className="text-[10px] font-mono text-cyan-400 whitespace-pre-wrap">
+                                {JSON.stringify(selectedAlert.payload, null, 2)}
+                              </pre>
+                            </div>
+                          </div>
+
+                          <div className="flex gap-2 mt-2 font-mono">
+                            <button 
+                              onClick={() => handleUpdateAlertStatus(selectedAlert.id, 'DISPATCHED')}
+                              className="flex-1 bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold py-2 rounded text-xs transition-colors"
+                            >
+                              DISPATCH UNIT
+                            </button>
+                            <button 
+                              onClick={() => handleUpdateAlertStatus(selectedAlert.id, 'RESOLVED')}
+                              className="bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold py-2 px-3 rounded text-xs transition-colors"
+                            >
+                              RESOLVE
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="glass-panel rounded-2xl p-6 text-center text-xs text-gray-500 border border-dashed border-slate-800 font-mono">
+                          Select an incident from the registry list to trigger dispatcher operations.
+                        </div>
+                      )}
+
+                    </div>
+
+                  </div>
+
+                  {/* EMERGENCY DISPATCH NOTIFICATIONS CENTER (Feature 5) */}
+                  <div className="glass-panel p-4 rounded-2xl flex flex-col gap-3 hud-box mt-6 font-mono">
+                    <div className="hud-corner corner-tl"></div><div className="hud-corner corner-tr"></div>
+                    <div className="hud-corner corner-bl"></div><div className="hud-corner corner-br"></div>
+                    <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                      <h3 className="text-xs uppercase font-semibold text-cyan-400 tracking-wider flex items-center gap-2">
+                        <i className="fa-solid fa-tower-broadcast text-rose-500 animate-pulse"></i>
+                        Emergency Dispatch Broadcast Center
+                      </h3>
+                      <span className="text-[9px] text-gray-500 uppercase">Simulated Real-time SMS & Email Outbox</span>
+                    </div>
+                    
+                    <div className="max-h-[160px] overflow-y-auto pr-1 flex flex-col gap-2">
+                      {notifications.length === 0 ? (
+                        <div className="text-center py-6 text-xs text-gray-500 italic">
+                          No dispatch notifications logged. Trigger a critical alert to simulate emergency broadcasts.
+                        </div>
+                      ) : (
+                        notifications.map((notif) => (
+                          <div key={notif.id} className="p-3 bg-slate-950/40 rounded-lg border border-slate-900 flex flex-col md:flex-row md:items-center justify-between gap-2.5 text-xs text-slate-350">
+                            <div className="flex items-center gap-3">
+                              <div className={`w-8 h-8 rounded-lg flex items-center justify-center border ${
+                                notif.channel === 'SMS' 
+                                  ? 'bg-blue-950/40 text-blue-400 border-blue-500/20' 
+                                  : 'bg-purple-950/40 text-purple-400 border-purple-500/20'
+                              }`}>
+                                <i className={notif.channel === 'SMS' ? 'fa-solid fa-comment-sms' : 'fa-solid fa-envelope'}></i>
+                              </div>
+                              <div>
+                                <div className="font-bold text-slate-200">{notif.recipient}</div>
+                                <div className="text-[9px] text-gray-500 font-bold tracking-tight mt-0.5">ALERT ID: {notif.alert_id.slice(0, 8)}...</div>
+                              </div>
+                            </div>
+                            
+                            <div className="flex-1 md:mx-6 text-slate-350 bg-slate-950/70 p-2 rounded border border-slate-900/60 leading-relaxed font-sans text-[11px]">
+                              {notif.message.split('\n').map((line, lIdx) => <div key={lIdx}>{line}</div>)}
+                            </div>
+                            
+                            <div className="flex flex-row md:flex-col items-end justify-between md:justify-center gap-2">
+                              <span className="px-2 py-0.5 rounded text-[8px] font-bold bg-emerald-950/60 text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
+                                <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-ping"></span>
+                                DELIVERED
+                              </span>
+                              <span className="text-[9px] text-gray-500 font-mono">{new Date(notif.sent_at).toLocaleTimeString()}</span>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                </div>
+              )}
+
+              {/* VIEW 2: BIOMETRIC SCANNER (WEBCAM & REAL FACE-API / WEAPON DETECTOR) */}
+              {view === 'camera' && (
+                <div className="glass-panel p-5 rounded-2xl flex flex-col gap-5 hud-box">
+                  <div className="hud-corner corner-tl"></div><div className="hud-corner corner-tr"></div>
+                  <div className="hud-corner corner-bl"></div><div className="hud-corner corner-br"></div>
+                                    <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                    <div>
+                      <h3 className="text-xl font-bold text-slate-200">Edge Biometric & Weapon Scanner</h3>
+                      <p className="text-xs text-gray-400 mt-0.5">Real-time local computer vision pipeline (SSD MobileNet + COCO-SSD Worker)</p>
+                    </div>
+                    
+                    {feedSource === 'local' && (
+                      <button 
+                        onClick={toggleCamera}
+                        disabled={!modelsLoaded}
+                        className={`font-mono text-xs font-bold py-2 px-4 rounded-lg flex items-center gap-2 border transition-all ${
+                          cameraActive 
+                            ? 'bg-rose-950/40 hover:bg-rose-900/40 text-rose-400 border-rose-500/20' 
+                            : 'bg-cyan-600 hover:bg-cyan-500 text-slate-950 border-cyan-500 hover:shadow-[0_0_12px_rgba(0,242,254,0.4)] disabled:opacity-40'
+                        }`}
+                      >
+                        <i className="fa-solid fa-power-off"></i>
+                        {!modelsLoaded ? 'LOADING AI CORES...' : cameraActive ? 'DEACTIVATE OPTICS' : 'ACTIVATE CAMERA'}
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Camera Source Selector Controls */}
+                  <div className="flex flex-wrap gap-4 items-center bg-slate-950/60 p-3 rounded-xl border border-slate-850 font-mono text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="text-gray-400 uppercase">STREAM SOURCE:</span>
+                      <button 
+                        onClick={() => setFeedSource('local')}
+                        className={`px-3 py-1.5 rounded-lg border transition-all ${
+                          feedSource === 'local' 
+                            ? 'bg-cyan-600 text-slate-950 border-cyan-500 font-bold shadow-[0_0_10px_rgba(0,242,254,0.2)]' 
+                            : 'bg-slate-900 text-gray-400 border-slate-800 hover:text-white'
+                        }`}
+                      >
+                        LOCAL WEBCAM
+                      </button>
+                      <button 
+                        onClick={() => setFeedSource('remote')}
+                        className={`px-3 py-1.5 rounded-lg border transition-all ${
+                          feedSource === 'remote' 
+                            ? 'bg-cyan-600 text-slate-950 border-cyan-500 font-bold shadow-[0_0_10px_rgba(0,242,254,0.2)]' 
+                            : 'bg-slate-900 text-gray-400 border-slate-800 hover:text-white'
+                        }`}
+                      >
+                        OFFICER BODYCAM (REMOTE)
+                      </button>
+                    </div>
+
+                    {feedSource === 'local' && (
+                      <div className="flex items-center gap-2 flex-1 min-w-[200px]">
+                        <span className="text-gray-400 uppercase">CAMERA:</span>
+                        <select 
+                          value={selectedDeviceId}
+                          onChange={(e) => setSelectedDeviceId(e.target.value)}
+                          className="bg-slate-900 border border-slate-800 text-[11px] px-2.5 py-1.5 rounded-lg text-slate-200 focus:outline-none focus:border-cyan-500 flex-1 font-mono"
+                        >
+                          {videoDevices.length === 0 ? (
+                            <option value="">Default Webcam</option>
+                          ) : (
+                            videoDevices.map(device => (
+                              <option key={device.deviceId} value={device.deviceId}>
+                                {device.label || `Camera ${device.deviceId.slice(0, 5)}`}
+                              </option>
+                            ))
+                          )}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+ 
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                    
+                    {/* Webcam Screen Column (7 cols) */}
+                    <div className="lg:col-span-7 flex flex-col gap-3">
+                      <div className="relative rounded-xl overflow-hidden border border-slate-700 bg-slate-950 aspect-[4/3] flex items-center justify-center">
+                        {(cameraActive || (feedSource === 'remote' && remoteFrame)) && (
+                          <div className="absolute top-3 right-3 bg-slate-950/80 border border-slate-800 text-[10px] text-cyan-400 px-2.5 py-1 rounded font-mono z-20 flex items-center gap-1.5">
+                            <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-ping"></span>
+                            {feedSource === 'local' ? 'EDGE STREAM INGEST' : 'OFFICER 09 BODYCAM'}
+                          </div>
+                        )}
+                        
+                        {/* Standby State */}
+                        {feedSource === 'local' && !cameraActive && (
+                          <div className="text-center text-gray-500 p-6 flex flex-col items-center gap-3">
+                            <div className="w-16 h-16 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400">
+                              <i className="fa-solid fa-video-slash text-2xl"></i>
+                            </div>
+                            <div>
+                              <p className="text-sm font-semibold text-slate-300">Surveillance Frame Standby</p>
+                              <p className="text-[10px] text-gray-500 mt-1 max-w-[240px]">
+                                Click **Activate Camera** to start real-time local face tracking and COCO-SSD object scan.
+                              </p>
+                            </div>
+                          </div>
+                        )}
+
+                        {feedSource === 'remote' && !remoteFrame && (
+                          <div className="text-center text-gray-500 p-6 flex flex-col items-center gap-3">
+                            <div className="w-16 h-16 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400 animate-pulse">
+                              <i className="fa-solid fa-wifi text-2xl text-cyan-500"></i>
+                            </div>
+                            <div>
+                              <p className="text-sm font-semibold text-slate-300">Awaiting Officer Stream</p>
+                              <p className="text-[10px] text-gray-500 mt-1 max-w-[240px]">
+                                Open the mobile app at `/static/mobile.html` and click **Stream to Command Center** to start broadcast.
+                              </p>
+                            </div>
+                          </div>
+                        )}
+                        
+                        {/* Local Video Stream */}
+                        {feedSource === 'local' && cameraActive && (
+                          <div className="relative w-full h-full">
+                            <video 
+                              ref={videoRef}
+                              style={{ display: 'block', width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }}
+                              autoPlay
+                              muted
+                              playsInline
+                            />
+                            <canvas 
+                              ref={canvasRef}
+                              className="absolute inset-0 w-full h-full pointer-events-none z-10"
+                              style={{ transform: 'scaleX(-1)' }}
+                            />
+                            <div className="scanner-sweep absolute left-0 w-full z-10"></div>
+                          </div>
+                        )}
+
+                        {/* Remote Image Stream */}
+                        {feedSource === 'remote' && remoteFrame && (
+                          <div className="relative w-full h-full">
+                            <img 
+                              ref={remoteImgRef}
+                              src={remoteFrame}
+                              style={{ display: 'block', width: '100%', height: '100%', objectFit: 'cover' }}
+                              alt="Remote feed"
+                            />
+                            <canvas 
+                              ref={canvasRef}
+                              className="absolute inset-0 w-full h-full pointer-events-none z-10"
+                            />
+                            <div className="scanner-sweep absolute left-0 w-full z-10"></div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Manual Hack keys information */}
+                      <div className="bg-slate-950/40 p-3 rounded-lg border border-slate-850 text-[10px] text-gray-400 font-mono flex items-center justify-between">
+                        <span>⌨️ PRESS **[ W ]** ON KEYBOARD TO INJECT SIMULATED WEAPON EVENT</span>
+                        <span className="text-cyan-500">HACKATHON MODE ACTIVE</span>
+                      </div>
+                    </div>
+
+                    {/* AI Scan and Enroll (5 cols) */}
+                    <div className="lg:col-span-5 flex flex-col gap-4">
+                      {/* Biometric logs panel */}
+                      <div className="glass-panel p-4 rounded-xl border border-slate-800 flex flex-col gap-3 font-mono">
+                        <h4 className="text-xs uppercase text-cyan-400 tracking-wider font-bold"><i className="fa-solid fa-microchip mr-1.5"></i> Biometric Analysis</h4>
+                        
+                        <div className="flex justify-between items-center text-xs border-b border-slate-800 pb-2">
+                          <span className="text-gray-400">Match Identity:</span>
+                          <span className={`font-bold ${faceMatchStatus === 'UNKNOWN' ? 'text-red-400 animate-pulse' : faceMatchStatus !== 'SCANNING...' ? 'text-green-400' : 'text-cyan-400'}`}>
+                            {faceMatchStatus}
+                          </span>
+                        </div>
+
+                        <div className="flex flex-col gap-1 text-xs">
+                          <div className="flex justify-between">
+                            <span className="text-gray-400">Match Confidence:</span>
+                            <span className="text-slate-200">{confidence}%</span>
+                          </div>
+                          <div className="w-full bg-slate-900 rounded-full h-2 overflow-hidden mt-1 border border-slate-850">
+                            <div 
+                              className={`h-full transition-all ${faceMatchStatus === 'UNKNOWN' ? 'bg-red-500' : 'bg-cyan-500'}`}
+                              style={{ width: `${confidence}%` }}
+                            ></div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Enrollment Form */}
+                      <div className="glass-panel p-4 rounded-xl border border-slate-800 flex flex-col gap-3 font-mono">
+                        <h4 className="text-xs uppercase text-cyan-400 tracking-wider font-bold"><i className="fa-solid fa-user-plus mr-1.5"></i> Profile Registration</h4>
+                        
+                        <input 
+                          type="text" 
+                          placeholder="ENTER CITIZEN NAME..."
+                          value={enrollName}
+                          onChange={(e) => setEnrollName(e.target.value)}
+                          className="w-full bg-slate-900 border border-slate-800 text-xs px-3 py-2.5 rounded-lg text-slate-200 focus:outline-none focus:border-cyan-500"
+                        />
+
+                        <label className="flex items-center gap-2 text-[10px] text-slate-350 cursor-pointer select-none">
+                          <input 
+                            type="checkbox" 
+                            checked={enrollIsWanted} 
+                            onChange={(e) => setEnrollIsWanted(e.target.checked)}
+                            className="rounded border-slate-850 text-cyan-500 focus:ring-0 focus:ring-offset-0 bg-slate-950 w-3.5 h-3.5"
+                          />
+                          <span>FLAG AS WANTED SUSPECT (AUTO-ALERT)</span>
+                        </label>
+                        
+                        <button 
+                          onClick={enrollNewFace}
+                          disabled={!cameraActive || isScanningBiometrics}
+                          className="w-full bg-slate-800 hover:bg-slate-700 text-cyan-400 font-bold border border-cyan-500/20 py-2.5 rounded-lg text-xs transition-colors disabled:opacity-40 disabled:hover:bg-slate-800"
+                        >
+                          {isScanningBiometrics ? 'SCANNING BIOMETRICS...' : 'SCAN & REGISTER WEBCAM'}
+                        </button>
+                        
+                        <div className="text-center text-[9px] text-cyan-500/40 my-0.5">-- OR --</div>
+                        
+                        <input 
+                          type="file" 
+                          id="enroll-image-file" 
+                          accept="image/*" 
+                          className="hidden"
+                          onChange={enrollFromPhoto}
+                        />
+                        <button 
+                          onClick={() => document.getElementById('enroll-image-file').click()}
+                          disabled={isScanningBiometrics}
+                          className="w-full bg-slate-900 hover:bg-slate-800 text-slate-355 font-bold border border-slate-800 py-2.5 rounded-lg text-xs transition-colors disabled:opacity-40"
+                        >
+                          <i className="fa-solid fa-upload mr-1.5 text-cyan-500"></i> UPLOAD PROFILE PHOTO
+                        </button>
+                      </div>
+
+                      {/* Enrolled Profiles List */}
+                      <div className="glass-panel p-4 rounded-xl border border-slate-800 flex flex-col gap-2 font-mono">
+                        <h4 className="text-xs uppercase text-cyan-400 tracking-wider font-bold mb-1"><i className="fa-solid fa-database mr-1.5"></i> Database Registry ({dbProfiles.length})</h4>
+                        <div className="flex flex-col gap-1.5 max-h-[120px] overflow-y-auto pr-1">
+                          {dbProfiles.length === 0 ? (
+                            <div className="text-[10px] text-gray-500 italic">No profiles registered.</div>
+                          ) : (
+                            dbProfiles.map((p, i) => (
+                              <div key={i} className="flex justify-between items-center bg-slate-900/50 p-2 rounded border border-slate-850 text-xs">
+                                <div className="flex items-center gap-1.5">
+                                  <span className={`w-1.5 h-1.5 rounded-full ${p.isWanted ? 'bg-red-500' : 'bg-green-500'}`}></span>
+                                  <span className="font-bold text-slate-300">{p.label}</span>
+                                  {p.isWanted && <span className="text-[9px] bg-red-950/60 text-red-400 px-1 py-0.5 rounded border border-red-500/20">WANTED</span>}
+                                </div>
+                                <button 
+                                  onClick={() => deleteProfile(p.label)}
+                                  className="text-gray-500 hover:text-red-400 transition-colors"
+                                >
+                                  <i className="fa-solid fa-trash-can text-[10px]"></i>
+                                </button>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Manual trigger triggers */}
+                      <div className="flex gap-2">
+                        <button 
+                          onClick={() => triggerConcealedWeaponAlert("Assault Rifle")}
+                          disabled={!cameraActive}
+                          className="flex-1 bg-red-950/40 hover:bg-red-900/40 text-red-400 border border-red-500/20 text-xs py-2 rounded-lg transition-colors font-mono disabled:opacity-40"
+                        >
+                          🚨 MOCK WEAPON
+                        </button>
+                        <button 
+                          onClick={triggerUnknownFaceAlert}
+                          disabled={!cameraActive}
+                          className="flex-1 bg-amber-950/40 hover:bg-amber-900/40 text-amber-400 border border-amber-500/20 text-xs py-2 rounded-lg transition-colors font-mono disabled:opacity-40"
+                        >
+                          🚨 MOCK SUSPECT
+                        </button>
+                      </div>
+                    </div>
+
+                  </div>
+                </div>
+              )}
+
+              {/* VIEW 3: SOLAR ENERGY HUB */}
+              {view === 'solar' && (
+                <div className="glass-panel p-5 rounded-2xl flex flex-col gap-5 hud-box">
+                  <div className="hud-corner corner-tl"></div><div className="hud-corner corner-tr"></div>
+                  <div className="hud-corner corner-bl"></div><div className="hud-corner corner-br"></div>
+                  
+                  <div className="border-b border-slate-800 pb-3">
+                    <h3 className="text-xl font-bold text-slate-200">Power Management & Telemetry Hub</h3>
+                    <p className="text-xs text-gray-400 mt-0.5">Renewable solar generator integration grid and MPPT charger statistics</p>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 font-mono text-xs">
+                    {/* Circle Battery bar */}
+                    <div className="glass-panel p-4 rounded-xl flex flex-col items-center justify-center gap-3">
+                      <div className="relative w-28 h-28 flex items-center justify-center">
+                        <svg className="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
+                          <circle cx="18" cy="18" r="16" fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="2.5"></circle>
+                          <circle cx="18" cy="18" r="16" fill="none" stroke="#10b981" strokeWidth="2.5" strokeDasharray="92 100" strokeLinecap="round" className="shadow-[0_0_8px_#10b981]"></circle>
+                        </svg>
+                        <span className="absolute text-xl font-bold text-slate-100">92%</span>
+                      </div>
+                      <span className="text-[10px] text-gray-400 uppercase tracking-wider font-bold">Battery SoC</span>
+                    </div>
+
+                    {/* Solar Panel Stats */}
+                    <div className="glass-panel p-4 rounded-xl flex flex-col gap-3 justify-center">
+                      <div className="flex justify-between border-b border-slate-800 pb-2">
+                        <span className="text-gray-400"><i className="fa-solid fa-solar-panel text-yellow-500 mr-1.5"></i> Solar Panel:</span>
+                        <span className="text-green-400 font-bold">18.4 V / 4.5 A</span>
+                      </div>
+                      <div className="flex justify-between border-b border-slate-800 pb-2">
+                        <span className="text-gray-400"><i className="fa-solid fa-sun text-yellow-400 mr-1.5"></i> Generation:</span>
+                        <span className="text-green-400 font-bold">450 W</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-400"><i className="fa-solid fa-plug text-cyan-400 mr-1.5"></i> Draw Load:</span>
+                        <span className="text-rose-400 font-bold">120 W</span>
+                      </div>
+                    </div>
+
+                    {/* Solar flow diagram */}
+                    <div className="glass-panel p-4 rounded-xl flex flex-col justify-center items-center gap-4 text-slate-400 text-lg">
+                      <div className="flex items-center gap-2">
+                        <div className="w-10 h-10 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center text-yellow-500"><i className="fa-solid fa-solar-panel"></i></div>
+                        <i className="fa-solid fa-arrow-right text-xs text-green-400 animate-pulse"></i>
+                        <div className="w-10 h-10 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center text-green-500"><i className="fa-solid fa-car-battery"></i></div>
+                        <i className="fa-solid fa-arrow-right text-xs text-green-400 animate-pulse"></i>
+                        <div className="w-10 h-10 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center text-red-500"><i className="fa-brands fa-raspberry-pi"></i></div>
+                      </div>
+                      <span className="text-[10px] text-gray-500 uppercase tracking-wider font-bold">MPPT Charge Loop</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* SYSTEM DIAGNOSTICS LOG FEED (Always visible at the bottom) */}
+              <div className="glass-panel p-4 rounded-2xl hud-box font-mono text-xs">
+                <div className="hud-corner corner-tl"></div><div className="hud-corner corner-tr"></div>
+                <div className="hud-corner corner-bl"></div><div className="hud-corner corner-br"></div>
+                
+                <h3 className="text-xs uppercase text-cyan-400 tracking-wider mb-2 font-bold flex items-center gap-1.5">
+                  <span className="w-2 h-2 bg-cyan-400 rounded-full animate-ping"></span>
+                  Diagnostics Node Logs
+                </h3>
+                
+                <div className="flex flex-col gap-1 max-h-[100px] overflow-y-auto">
+                  {systemLogs.length === 0 ? (
+                    <div className="text-gray-600 italic">No system diagnostics reported. Scanning cores...</div>
+                  ) : (
+                    systemLogs.map((log, i) => (
+                      <div key={i} className={`text-[11px] ${log.type === 'alert' ? 'text-red-400 animate-pulse font-bold' : 'text-slate-400'}`}>
+                        <span>[{log.time}]</span> <span className="ml-2">{log.msg}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+            </div>
+
+          </div>
+
+          {/* NODE DETAIL OVERLAY MODAL */}
+          {selectedNodeDetails && (
+            <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="glass-panel w-full max-w-lg rounded-2xl p-6 border border-cyan-500/20 shadow-2xl relative">
+                <div className="flex justify-between items-start border-b border-slate-800 pb-3 mb-4 font-mono">
+                  <div>
+                    <h3 className="text-xl font-bold text-slate-100">{selectedNodeDetails.node_name}</h3>
+                    <p className="text-xs text-gray-400 mt-0.5">MAC: {selectedNodeDetails.mac_address}</p>
+                  </div>
+                  <button onClick={() => setSelectedNodeDetails(null)} className="text-gray-400 hover:text-white">
+                    <i className="fa-solid fa-xmark text-lg"></i>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 font-mono text-xs">
+                  <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-850">
+                    <span className="text-[9px] text-gray-500 uppercase block">Solar Charger</span>
+                    <span className="text-sm font-bold text-green-400">18.4 V / 4.5 A</span>
+                  </div>
+                  <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-850">
+                    <span className="text-[9px] text-gray-500 uppercase block">Battery Level</span>
+                    <span className="text-sm font-bold text-green-400">92%</span>
+                  </div>
+                  <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-850">
+                    <span className="text-[9px] text-gray-500 uppercase block">Diagnostics CPU</span>
+                    <span className="text-sm font-bold text-slate-350">GPU: 72% | 54.0°C</span>
+                  </div>
+                  <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-850">
+                    <span className="text-[9px] text-gray-500 uppercase block">IP Address</span>
+                    <span className="text-sm font-bold text-cyan-400">{selectedNodeDetails.ip_address}</span>
+                  </div>
+                </div>
+
+                <div className="mt-5 border-t border-slate-850 pt-4 font-mono">
+                  <span className="text-[10px] text-gray-500 uppercase block mb-2">Cryptographic Validation Public Key</span>
+                  <pre className="text-[9px] font-mono text-gray-600 bg-slate-950 p-3 rounded-lg overflow-x-auto select-all max-h-[120px]">
+                    {selectedNodeDetails.public_key}
+                  </pre>
+                </div>
+              </div>
+            </div>
+          )}
+
+        </div>
+      );
+    }
+
+    const container = document.getElementById('root');
+    const root = ReactDOM.createRoot(container);
+    root.render(<App />);
+  </script>
+</body>
+</html>

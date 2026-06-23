@@ -1,0 +1,1092 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SolarShield AI - Central Policing Command Dashboard</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Google Fonts Outfit & Inter -->
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <!-- React & Babel for direct runnability -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone@7.26.10/babel.min.js"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      background: radial-gradient(circle at top right, #0d1527, #030712);
+      min-height: 100vh;
+      color: #f3f4f6;
+      overflow-x: hidden;
+    }
+    h1, h2, h3, .title-font {
+      font-family: 'Outfit', sans-serif;
+    }
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: rgba(15, 23, 42, 0.3);
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(59, 130, 246, 0.3);
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(59, 130, 246, 0.6);
+    }
+    /* Glassmorphism Classes */
+    .glass-panel {
+      background: rgba(17, 24, 39, 0.65);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    .glass-card {
+      background: rgba(31, 41, 55, 0.45);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(255, 255, 255, 0.03);
+    }
+    .neon-border-red {
+      box-shadow: 0 0 15px rgba(239, 68, 68, 0.25);
+      border: 1px solid rgba(239, 68, 68, 0.5);
+    }
+    .neon-glow-blue {
+      box-shadow: 0 0 20px rgba(59, 130, 246, 0.15);
+    }
+    /* Keyframe Animations */
+    @keyframes pulse-slow {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.7; transform: scale(0.98); }
+    }
+    .pulse-animation {
+      animation: pulse-slow 3s infinite ease-in-out;
+    }
+    @keyframes beacon {
+      0% { transform: scale(1); opacity: 0.8; }
+      100% { transform: scale(2.5); opacity: 0; }
+    }
+    .beacon-ring {
+      animation: beacon 1.8s infinite cubic-bezier(0.1, 0, 0.3, 1);
+    }
+  </style>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#eff6ff',
+              100: '#dbeafe',
+              500: '#3b82f6',
+              600: '#2563eb',
+              900: '#1e3a8a',
+            }
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body class="p-4 md:p-6">
+
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="react" data-preset-options='{"react": {"runtime": "classic"}}'>
+    const { useState, useEffect, useRef } = React;
+
+    function App() {
+      const [alerts, setAlerts] = useState([]);
+      const [nodes, setNodes] = useState([]);
+      const [activeTab, setActiveTab] = useState('live'); // 'live', 'nodes', 'camera'
+      const [selectedAlert, setSelectedAlert] = useState(null);
+      const [stats, setStats] = useState({
+        totalAlerts: 0,
+        unresolvedCount: 0,
+        batteryFaults: 0,
+        activeNodes: 0
+      });
+      const [connectionStatus, setConnectionStatus] = useState('connecting');
+      const [selectedNodeDetails, setSelectedNodeDetails] = useState(null);
+
+      // WebCam Integration States and Refs
+      const [cameraActive, setCameraActive] = useState(false);
+      const [overlayActive, setOverlayActive] = useState(true);
+      const [simulatedThreat, setSimulatedThreat] = useState(false);
+      const [cameraError, setCameraError] = useState(null);
+
+      // Bodycam Selection & Remote Streaming states
+      const [videoDevices, setVideoDevices] = useState([]);
+      const [selectedDeviceId, setSelectedDeviceId] = useState('');
+      const [feedSource, setFeedSource] = useState('local'); // 'local' or 'remote'
+      const [remoteFrame, setRemoteFrame] = useState(null);
+      const remoteImgRef = useRef(null);
+
+      const videoRef = useRef(null);
+      const canvasRef = useRef(null);
+      const streamRef = useRef(null);
+
+      useEffect(() => {
+        const getDevices = async () => {
+          try {
+            const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
+            tempStream.getTracks().forEach(t => t.stop());
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            setVideoDevices(devices.filter(d => d.kind === 'videoinput'));
+          } catch(e) {}
+        };
+        getDevices();
+      }, []);
+
+      // WebSocket Bodycam Stream Listener for offline dashboard (fully functional when backend is alive)
+      useEffect(() => {
+        if (feedSource !== 'remote') {
+          setRemoteFrame(null);
+          return;
+        }
+
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = window.location.host || 'localhost:8000';
+        const wsUrl = `${protocol}//${host}/api/v1/bodycam/stream`;
+        
+        const ws = new WebSocket(wsUrl);
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.image) {
+              setRemoteFrame(data.image);
+            }
+          } catch (e) {
+            if (event.data.startsWith('data:image')) {
+              setRemoteFrame(event.data);
+            }
+          }
+        };
+
+        return () => {
+          ws.close();
+        };
+      }, [feedSource]);
+
+      // Restart camera stream if it's active and device changes
+      useEffect(() => {
+        const restartCameraIfActive = async () => {
+          if (cameraActive && selectedDeviceId) {
+            if (streamRef.current) {
+              streamRef.current.getTracks().forEach(track => track.stop());
+            }
+            try {
+              const constraints = { video: { deviceId: { exact: selectedDeviceId }, width: 640, height: 480 } };
+              const stream = await navigator.mediaDevices.getUserMedia(constraints);
+              streamRef.current = stream;
+              if (videoRef.current) {
+                videoRef.current.srcObject = stream;
+                videoRef.current.onloadedmetadata = () => videoRef.current.play().catch(e => console.log("Video play error:", e));
+              }
+            } catch (err) {
+              console.error(err);
+            }
+          }
+        };
+        restartCameraIfActive();
+      }, [selectedDeviceId]);
+
+      const toggleWebcam = async () => {
+        if (cameraActive) {
+          if (streamRef.current) {
+            streamRef.current.getTracks().forEach(track => track.stop());
+            streamRef.current = null;
+          }
+          if (videoRef.current) {
+            videoRef.current.srcObject = null;
+          }
+          setCameraActive(false);
+        } else {
+          setCameraError(null);
+          try {
+            const constraints = selectedDeviceId 
+              ? { video: { deviceId: { exact: selectedDeviceId }, width: 640, height: 480 } }
+              : { video: { width: 640, height: 480 } };
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            streamRef.current = stream;
+            setCameraActive(true);
+            
+            // Allow state update to render elements before attaching stream
+            setTimeout(() => {
+              if (videoRef.current) {
+                videoRef.current.srcObject = stream;
+                videoRef.current.onloadedmetadata = () => {
+                  videoRef.current.play().catch(e => console.log("Video play error:", e));
+                };
+              }
+            }, 100);
+          } catch (err) {
+            console.error("Error accessing camera:", err);
+            setCameraError("Camera access denied or device not found. Please verify permissions.");
+            setCameraActive(false);
+          }
+        }
+      };
+
+      // Clean up camera on unmount
+      useEffect(() => {
+        return () => {
+          if (streamRef.current) {
+            streamRef.current.getTracks().forEach(track => track.stop());
+          }
+        };
+      }, []);
+
+      // Draw dynamic high-tech scanning overlays and bounding boxes
+      useEffect(() => {
+        let animationFrameId;
+        const canvas = canvasRef.current;
+        const video = videoRef.current;
+        if (!canvas || !video || !cameraActive) return;
+
+        const ctx = canvas.getContext('2d');
+        let x = 120, y = 100, dx = 1.5, dy = 1.2;
+        
+        const renderOverlay = () => {
+          if (!video || video.paused || video.ended) {
+            animationFrameId = requestAnimationFrame(renderOverlay);
+            return;
+          }
+          
+          if (canvas.width !== video.videoWidth) {
+            canvas.width = video.videoWidth || 640;
+            canvas.height = video.videoHeight || 480;
+          }
+
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+          if (overlayActive) {
+            // Draw crosshair scanner guides
+            ctx.strokeStyle = 'rgba(59, 130, 246, 0.3)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(canvas.width / 2, 20);
+            ctx.lineTo(canvas.width / 2, canvas.height - 20);
+            ctx.moveTo(20, canvas.height / 2);
+            ctx.lineTo(canvas.width - 20, canvas.height / 2);
+            ctx.stroke();
+
+            // Bouncing bounding box coordinates update
+            x += dx;
+            y += dy;
+            if (x < 20 || x > canvas.width - 200) dx = -dx;
+            if (y < 20 || y > canvas.height - 200) dy = -dy;
+
+            const w = 170;
+            const h = 180;
+
+            // Box styling depending on threat trigger
+            if (simulatedThreat) {
+              ctx.strokeStyle = '#f87171'; // Light red
+              ctx.fillStyle = '#ef4444';
+            } else {
+              ctx.strokeStyle = '#34d399'; // Emerald
+              ctx.fillStyle = '#10b981';
+            }
+
+            ctx.lineWidth = 2.5;
+            ctx.strokeRect(x, y, w, h);
+            
+            // Draw text box header background
+            ctx.font = 'bold 11px Inter, sans-serif';
+            const text = simulatedThreat 
+              ? '⚠️ ALERT: WEAPON (Pistol) 94.8%' 
+              : '👤 PERSON: OFFICER MATCH 91.2%';
+            const textWidth = ctx.measureText(text).width;
+            ctx.fillRect(x - 1, y - 22, textWidth + 12, 22);
+            
+            // Draw text tag
+            ctx.fillStyle = '#ffffff';
+            ctx.fillText(text, x + 6, y - 7);
+
+            // Tech corner brackets
+            ctx.strokeStyle = simulatedThreat ? '#f87171' : '#34d399';
+            ctx.lineWidth = 4;
+            // Top-left
+            ctx.beginPath(); ctx.moveTo(x, y + 20); ctx.lineTo(x, y); ctx.lineTo(x + 20, y); ctx.stroke();
+            // Top-right
+            ctx.beginPath(); ctx.moveTo(x + w, y + 20); ctx.lineTo(x + w, y); ctx.lineTo(x + w - 20, y); ctx.stroke();
+            // Bottom-left
+            ctx.beginPath(); ctx.moveTo(x, y + h - 20); ctx.lineTo(x, y + h); ctx.lineTo(x + 20, y + h); ctx.stroke();
+            // Bottom-right
+            ctx.beginPath(); ctx.moveTo(x + w, y + h - 20); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w - 20, y + h); ctx.stroke();
+
+            // Scanning sweep line
+            const sweepY = (Math.sin(Date.now() / 400) + 1) * (canvas.height / 2);
+            ctx.strokeStyle = 'rgba(59, 130, 246, 0.1)';
+            ctx.lineWidth = 6;
+            ctx.beginPath();
+            ctx.moveTo(10, sweepY);
+            ctx.lineTo(canvas.width - 10, sweepY);
+            ctx.stroke();
+          }
+
+          animationFrameId = requestAnimationFrame(renderOverlay);
+        };
+
+        renderOverlay();
+
+        return () => {
+          cancelAnimationFrame(animationFrameId);
+        };
+      }, [cameraActive, overlayActive, simulatedThreat]);
+
+      // Fetch initial dataset & register events source
+      useEffect(() => {
+        // Fetch static registered nodes list
+        const fetchInitialData = async () => {
+          try {
+            const nodesResp = await fetch('http://localhost:8000/api/v1/nodes');
+            if (nodesResp.ok) {
+              const nodesData = await nodesResp.json();
+              setNodes(nodesData);
+            }
+            
+            const alertsResp = await fetch('http://localhost:8000/api/v1/alerts');
+            if (alertsResp.ok) {
+              const alertsData = await alertsResp.json();
+              // Sort alerts by created_at desc
+              const sortedAlerts = alertsData.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+              setAlerts(sortedAlerts);
+            }
+          } catch (err) {
+            console.error("Failed to load initial data, backend might be offline. Mocking values...", err);
+            // Mock Data for offline preview stability
+            const mockNodes = [
+              {
+                id: "8f8b030e-56e2-45e3-8f64-98c92a95e0de",
+                node_name: "SolarShield-Edge-01 (MG Road)",
+                mac_address: "00:1A:2B:3C:4D:5E",
+                ip_address: "192.168.1.150",
+                latitude: 23.0255,
+                longitude: 72.5795,
+                status: "ACTIVE",
+                created_at: new Date().toISOString()
+              },
+              {
+                id: "5fa6fbb7-862d-4bf0-ba09-2ad6a8bc43f1",
+                node_name: "SolarShield-Edge-02 (Satellite)",
+                mac_address: "00:1A:2B:3C:4D:5F",
+                ip_address: "192.168.1.151",
+                latitude: 23.0300,
+                longitude: 72.5280,
+                status: "LOW_BATTERY",
+                created_at: new Date().toISOString()
+              }
+            ];
+            setNodes(mockNodes);
+
+            const mockAlerts = [
+              {
+                id: "a1b2c3d4-e5f6-7a8b-9c0d-e1f2a3b4c5d6",
+                node_id: "8f8b030e-56e2-45e3-8f64-98c92a95e0de",
+                alert_type: "WEAPON",
+                threat_level: "CRITICAL",
+                image_url: "https://images.unsplash.com/photo-1595590424283-b8f17842773f?w=600",
+                video_url: null,
+                payload: { weapon: "Handgun identified", confidence: 0.94 },
+                latitude: 12.9720,
+                longitude: 77.5950,
+                status: "UNRESOLVED",
+                created_at: new Date().toISOString()
+              },
+              {
+                id: "f9e8d7c6-b5a4-3322-1100-fedcba987654",
+                node_id: "5fa6fbb7-862d-4bf0-ba09-2ad6a8bc43f1",
+                alert_type: "LPR",
+                threat_level: "MEDIUM",
+                image_url: "https://images.unsplash.com/photo-1617469165786-8007eda3caa7?w=600",
+                video_url: null,
+                payload: { plate: "KA-03-HA-8877", match_flag: true, owner: "Stolen Bullet 350" },
+                latitude: 12.9790,
+                longitude: 77.6410,
+                status: "UNRESOLVED",
+                created_at: new Date(Date.now() - 300000).toISOString()
+              }
+            ];
+            setAlerts(mockAlerts);
+          }
+        };
+
+        fetchInitialData();
+
+        // Server Sent Events connection
+        const eventSource = new EventSource('http://localhost:8000/api/v1/alerts/feed');
+
+        eventSource.onopen = () => {
+          setConnectionStatus('connected');
+          console.log("SSE alerts channel established successfully.");
+        };
+
+        eventSource.onerror = (e) => {
+          setConnectionStatus('offline');
+          console.log("SSE disconnected. Retrying in background...", e);
+        };
+
+        eventSource.onmessage = (event) => {
+          try {
+            const newAlert = JSON.parse(event.data);
+            console.log("New Alert Received via SSE:", newAlert);
+            
+            // Prepend new alert
+            setAlerts(prev => [newAlert, ...prev]);
+            
+            // Audio alert notification
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(880, audioCtx.currentTime); // High pitch A5
+            gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.35);
+          } catch (err) {
+            console.error("Error parsing alert event data:", err);
+          }
+        };
+
+        return () => {
+          eventSource.close();
+        };
+      }, []);
+
+      // Calculate state statistics dynamically
+      useEffect(() => {
+        setStats({
+          totalAlerts: alerts.length,
+          unresolvedCount: alerts.filter(a => a.status === 'UNRESOLVED').length,
+          batteryFaults: nodes.filter(n => n.status === 'LOW_BATTERY').length,
+          activeNodes: nodes.filter(n => n.status === 'ACTIVE').length
+        });
+      }, [alerts, nodes]);
+
+      const handleUpdateAlertStatus = async (alertId, newStatus) => {
+        try {
+          const response = await fetch(`http://localhost:8000/api/v1/alerts/${alertId}/status`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: newStatus })
+          });
+          if (response.ok) {
+            const updated = await response.json();
+            setAlerts(prev => prev.map(a => a.id === alertId ? { ...a, status: updated.status } : a));
+            if (selectedAlert && selectedAlert.id === alertId) {
+              setSelectedAlert(prev => ({ ...prev, status: updated.status }));
+            }
+          }
+        } catch (err) {
+          // Local fallback in offline mode
+          setAlerts(prev => prev.map(a => a.id === alertId ? { ...a, status: newStatus } : a));
+          if (selectedAlert && selectedAlert.id === alertId) {
+            setSelectedAlert(prev => ({ ...prev, status: newStatus }));
+          }
+        }
+      };
+
+      const getThreatColor = (level) => {
+        switch (level) {
+          case 'CRITICAL': return 'bg-red-950/60 text-red-400 border-red-500/50';
+          case 'HIGH': return 'bg-orange-950/60 text-orange-400 border-orange-500/50';
+          case 'MEDIUM': return 'bg-yellow-950/60 text-yellow-400 border-yellow-500/50';
+          default: return 'bg-blue-950/60 text-blue-400 border-blue-500/50';
+        }
+      };
+
+      const getStatusClass = (status) => {
+        switch (status) {
+          case 'RESOLVED': return 'bg-emerald-950/80 text-emerald-400 border border-emerald-500/30';
+          case 'DISPATCHED': return 'bg-blue-950/80 text-blue-400 border border-brand-500/30';
+          case 'ACKNOWLEDGED': return 'bg-purple-950/80 text-purple-400 border border-purple-500/30';
+          default: return 'bg-red-950/80 text-red-400 border border-red-500/40 animate-pulse';
+        }
+      };
+
+      return (
+        <div className="max-w-[1600px] mx-auto flex flex-col gap-6">
+          
+          {/* HEADER SECTION */}
+          <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-gray-800 pb-5">
+            <div>
+              <div className="flex items-center gap-3">
+                <div className="relative w-8 h-8 rounded-full bg-brand-500 flex items-center justify-center neon-glow-blue">
+                  <i data-lucide="shield" className="w-5 h-5 text-white"></i>
+                  <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 rounded-full border-2 border-slate-900"></span>
+                </div>
+                <h1 className="text-3xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white via-slate-200 to-brand-500">
+                  SolarShield AI
+                </h1>
+              </div>
+              <p className="text-gray-400 text-sm mt-1">Autonomous Smart Policing & Edge Surveillance Grid</p>
+            </div>
+            
+            <div className="flex items-center gap-3">
+              {/* Server connection chip */}
+              <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold glass-panel ${
+                connectionStatus === 'connected' ? 'text-emerald-400 border-emerald-500/20' : 'text-rose-400 border-rose-500/20'
+              }`}>
+                <span className={`w-2.5 h-2.5 rounded-full ${connectionStatus === 'connected' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`}></span>
+                {connectionStatus === 'connected' ? 'LIVE SYNCED' : 'OFFLINE MODE'}
+              </div>
+              <div className="text-sm text-gray-400 bg-slate-950/40 px-3 py-1.5 rounded-lg border border-gray-800">
+                13 Jun 2026 | 01:15:32 IST
+              </div>
+            </div>
+          </header>
+
+          {/* MAIN STATS ROW */}
+          <section className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="glass-panel p-5 rounded-2xl flex items-center justify-between">
+              <div>
+                <p className="text-xs text-gray-400 uppercase font-semibold">Total Event Detections</p>
+                <h3 className="text-3xl font-bold mt-1 text-slate-100">{stats.totalAlerts}</h3>
+              </div>
+              <div className="p-3 bg-slate-800/60 rounded-xl text-brand-500">
+                <i data-lucide="activity" className="w-6 h-6"></i>
+              </div>
+            </div>
+
+            <div className="glass-panel p-5 rounded-2xl flex items-center justify-between">
+              <div>
+                <p className="text-xs text-gray-400 uppercase font-semibold">Unresolved Incidents</p>
+                <h3 className="text-3xl font-bold mt-1 text-red-400">{stats.unresolvedCount}</h3>
+              </div>
+              <div className="p-3 bg-red-950/40 rounded-xl text-red-500">
+                <i data-lucide="bell" className="w-6 h-6"></i>
+              </div>
+            </div>
+
+            <div className="glass-panel p-5 rounded-2xl flex items-center justify-between">
+              <div>
+                <p className="text-xs text-gray-400 uppercase font-semibold">Active Nodes</p>
+                <h3 className="text-3xl font-bold mt-1 text-emerald-400">{stats.activeNodes}</h3>
+              </div>
+              <div className="p-3 bg-emerald-950/40 rounded-xl text-emerald-500">
+                <i data-lucide="cpu" className="w-6 h-6"></i>
+              </div>
+            </div>
+
+            <div className="glass-panel p-5 rounded-2xl flex items-center justify-between">
+              <div>
+                <p className="text-xs text-gray-400 uppercase font-semibold">Power Faults</p>
+                <h3 className="text-3xl font-bold mt-1 text-yellow-500">{stats.batteryFaults}</h3>
+              </div>
+              <div className="p-3 bg-yellow-950/40 rounded-xl text-yellow-500">
+                <i data-lucide="sun" className="w-6 h-6"></i>
+              </div>
+            </div>
+          </section>
+
+          {/* SYSTEM INTERFACE GRID */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+            
+            {/* LEFT CONTAINER: EVENT LIST (5 cols) */}
+            <div className="lg:col-span-5 flex flex-col gap-4">
+              <div className="flex justify-between items-center bg-slate-900/50 p-2 rounded-xl border border-gray-800">
+                <div className="flex gap-1">
+                  <button 
+                    onClick={() => setActiveTab('live')} 
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                      activeTab === 'live' ? 'bg-brand-600 text-white shadow-lg' : 'text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    Incident Stream
+                  </button>
+                  <button 
+                    onClick={() => setActiveTab('nodes')} 
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                      activeTab === 'nodes' ? 'bg-brand-600 text-white shadow-lg' : 'text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    Node Registry
+                  </button>
+                  <button 
+                    onClick={() => setActiveTab('camera')} 
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                      activeTab === 'camera' ? 'bg-brand-600 text-white shadow-lg' : 'text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    Live Cam Feed
+                  </button>
+                </div>
+                <div className="text-xs text-brand-500 flex items-center gap-1 font-semibold pr-2">
+                  <span className="w-1.5 h-1.5 bg-brand-500 rounded-full animate-ping"></span>
+                  AUTO-UPDATE
+                </div>
+              </div>
+
+              {activeTab === 'live' ? (
+                <div className="glass-panel rounded-2xl p-4 flex flex-col gap-3 max-h-[600px] overflow-y-auto">
+                  <h3 className="text-lg font-bold text-slate-200 mb-1">Live Feed</h3>
+                  {alerts.length === 0 ? (
+                    <div className="text-center py-10 text-gray-500">No security events triggered.</div>
+                  ) : (
+                    alerts.map((alert) => (
+                      <div 
+                        key={alert.id}
+                        onClick={() => setSelectedAlert(alert)}
+                        className={`p-3 rounded-xl glass-card border cursor-pointer hover:bg-slate-800/40 transition-all flex flex-col gap-2 ${
+                          selectedAlert && selectedAlert.id === alert.id ? 'border-brand-500/80 bg-slate-800/40' : 'border-gray-800'
+                        }`}
+                      >
+                        <div className="flex justify-between items-start">
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold tracking-wider border ${getThreatColor(alert.threat_level)}`}>
+                            {alert.alert_type}
+                          </span>
+                          <span className="text-[10px] text-gray-400">
+                            {new Date(alert.created_at).toLocaleTimeString()}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          {alert.image_url ? (
+                            <img src={alert.image_url} alt="incident crop" className="w-12 h-12 object-cover rounded-lg border border-slate-700" />
+                          ) : (
+                            <div className="w-12 h-12 bg-slate-800 rounded-lg flex items-center justify-center text-gray-500">
+                              <i data-lucide="video" className="w-5 h-5"></i>
+                            </div>
+                          )}
+                          <div>
+                            <p className="text-xs text-slate-300 font-semibold">
+                              {alert.alert_type === 'LPR' ? `Plate: ${alert.payload.plate}` : alert.payload.weapon || alert.payload.type || "Threat Triggered"}
+                            </p>
+                            <p className="text-[10px] text-gray-500 mt-0.5 flex items-center gap-1">
+                              <i data-lucide="map-pin" className="w-3 h-3 text-brand-500"></i>
+                              Lat: {alert.latitude.toFixed(4)}, Lng: {alert.longitude.toFixed(4)}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex justify-between items-center border-t border-gray-800/60 pt-2 mt-1">
+                          <span className={`px-2 py-0.5 rounded text-[9px] font-medium ${getStatusClass(alert.status)}`}>
+                            {alert.status}
+                          </span>
+                          <span className="text-[9px] text-brand-400 font-medium">Verify Signature &rarr;</span>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              ) : activeTab === 'nodes' ? (
+                <div className="glass-panel rounded-2xl p-4 flex flex-col gap-3 max-h-[600px] overflow-y-auto">
+                  <h3 className="text-lg font-bold text-slate-200 mb-1">Edge Nodes</h3>
+                  {nodes.map(node => (
+                    <div 
+                      key={node.id} 
+                      onClick={() => setSelectedNodeDetails(node)}
+                      className="p-3 rounded-xl glass-card border border-gray-800 hover:border-brand-500/40 cursor-pointer flex justify-between items-center"
+                    >
+                      <div>
+                        <h4 className="text-xs font-bold text-slate-300">{node.node_name}</h4>
+                        <p className="text-[10px] text-gray-500 mt-0.5 font-mono">{node.mac_address}</p>
+                      </div>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                        node.status === 'ACTIVE' ? 'bg-emerald-950/80 text-emerald-400' : 'bg-yellow-950/80 text-yellow-400 animate-pulse'
+                      }`}>
+                        {node.status}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="glass-panel rounded-2xl p-4 flex flex-col gap-4">
+                  <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                    <h3 className="text-lg font-bold text-slate-200">Camera Integration</h3>
+                    <div className="flex items-center gap-1.5">
+                      <span className={`w-2.5 h-2.5 rounded-full ${(cameraActive || (feedSource === 'remote' && remoteFrame)) ? 'bg-red-500 animate-pulse' : 'bg-slate-600'}`}></span>
+                      <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">
+                        {(cameraActive || (feedSource === 'remote' && remoteFrame)) ? 'CAPTURING' : 'STANDBY'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Camera Source Selector Controls */}
+                  <div className="flex flex-wrap gap-3 items-center bg-slate-950/60 p-2.5 rounded-xl border border-slate-850 font-mono text-[10px]">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-gray-500 uppercase">SOURCE:</span>
+                      <button 
+                        onClick={() => setFeedSource('local')}
+                        className={`px-2.5 py-1 rounded-md border transition-all ${
+                          feedSource === 'local' 
+                            ? 'bg-cyan-600 text-slate-950 border-cyan-500 font-bold' 
+                            : 'bg-slate-900 text-gray-400 border-slate-800 hover:text-white'
+                        }`}
+                      >
+                        LOCAL WEBCAM
+                      </button>
+                      <button 
+                        onClick={() => setFeedSource('remote')}
+                        className={`px-2.5 py-1 rounded-md border transition-all ${
+                          feedSource === 'remote' 
+                            ? 'bg-cyan-600 text-slate-950 border-cyan-500 font-bold' 
+                            : 'bg-slate-900 text-gray-400 border-slate-800 hover:text-white'
+                        }`}
+                      >
+                        REMOTE BODYCAM
+                      </button>
+                    </div>
+
+                    {feedSource === 'local' && (
+                      <div className="flex items-center gap-1.5 flex-1 min-w-[150px]">
+                        <span className="text-gray-500 uppercase">DEVICE:</span>
+                        <select 
+                          value={selectedDeviceId}
+                          onChange={(e) => setSelectedDeviceId(e.target.value)}
+                          className="bg-slate-900 border border-slate-800 text-[10px] px-2 py-1 rounded-md text-slate-200 focus:outline-none focus:border-cyan-500 flex-1 font-mono"
+                        >
+                          {videoDevices.length === 0 ? (
+                            <option value="">Default Webcam</option>
+                          ) : (
+                            videoDevices.map(device => (
+                              <option key={device.deviceId} value={device.deviceId}>
+                                {device.label || `Camera ${device.deviceId.slice(0, 5)}`}
+                              </option>
+                            ))
+                          )}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="relative rounded-xl overflow-hidden border border-slate-700 bg-slate-950 aspect-[4/3] flex items-center justify-center">
+                    {cameraError ? (
+                      <div className="p-4 text-center text-xs text-red-400 bg-red-950/30 w-full h-full flex flex-col items-center justify-center gap-2">
+                        <i data-lucide="alert-circle" className="w-8 h-8"></i>
+                        <p>{cameraError}</p>
+                      </div>
+                    ) : feedSource === 'local' && !cameraActive ? (
+                      <div className="text-center text-gray-500 p-6 flex flex-col items-center gap-3">
+                        <div className="w-16 h-16 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400">
+                          <i data-lucide="video" className="w-8 h-8"></i>
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold text-slate-300">Edge Camera Offline</p>
+                          <p className="text-[10px] text-gray-500 mt-1 max-w-[200px]">
+                            Activate the local camera to simulate a live edge node feed with real-time AI bounding boxes.
+                          </p>
+                        </div>
+                        <button 
+                          onClick={toggleWebcam}
+                          className="mt-2 bg-brand-600 hover:bg-brand-500 text-white text-xs font-bold py-2 px-4 rounded-lg flex items-center gap-2 shadow-lg transition-colors"
+                        >
+                          <i data-lucide="power" className="w-4 h-4"></i>
+                          Start Camera
+                        </button>
+                      </div>
+                    ) : feedSource === 'remote' && !remoteFrame ? (
+                      <div className="text-center text-gray-500 p-6 flex flex-col items-center gap-3 font-mono text-xs">
+                        <div className="w-16 h-16 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-cyan-400 animate-pulse">
+                          <i className="fa-solid fa-wifi text-2xl"></i>
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold text-slate-300">Awaiting Remote Stream</p>
+                          <p className="text-[10px] text-gray-500 mt-1 max-w-[200px]">
+                            Connect the stream from the officer mobile page (`/static/mobile.html`) to display the live feed.
+                          </p>
+                        </div>
+                      </div>
+                    ) : feedSource === 'local' && cameraActive ? (
+                      <div className="relative w-full h-full">
+                        <video 
+                          ref={videoRef}
+                          style={{ display: 'block', width: '100%', height: '100%', objectFit: 'cover' }}
+                          muted
+                          playsInline
+                        />
+                        <canvas 
+                          ref={canvasRef}
+                          className="absolute inset-0 w-full h-full pointer-events-none"
+                        />
+                      </div>
+                    ) : (
+                      <div className="relative w-full h-full">
+                        <img 
+                          ref={remoteImgRef}
+                          src={remoteFrame}
+                          style={{ display: 'block', width: '100%', height: '100%', objectFit: 'cover' }}
+                          alt="Remote stream"
+                        />
+                        <canvas 
+                          ref={canvasRef}
+                          className="absolute inset-0 w-full h-full pointer-events-none"
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+                  {cameraActive && (
+                    <div className="flex flex-col gap-3 border-t border-slate-800 pt-3">
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs text-gray-400 font-medium">YOLOv11 Bounding Boxes</span>
+                        <button 
+                          onClick={() => setOverlayActive(!overlayActive)}
+                          className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
+                            overlayActive ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/30' : 'bg-slate-800 text-slate-400 border border-slate-700'
+                          }`}
+                        >
+                          {overlayActive ? 'ACTIVE' : 'DISABLED'}
+                        </button>
+                      </div>
+
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs text-gray-400 font-medium">Simulate Threat Event</span>
+                        <button 
+                          onClick={() => setSimulatedThreat(!simulatedThreat)}
+                          className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
+                            simulatedThreat ? 'bg-red-600 text-white border border-red-500 animate-pulse' : 'bg-slate-800 text-slate-400 border border-slate-700 hover:bg-slate-700 hover:text-slate-200'
+                          }`}
+                        >
+                          {simulatedThreat ? '⚠️ THREAT ACTIVE' : 'SIMULATE THREAT'}
+                        </button>
+                      </div>
+
+                      <button 
+                        onClick={toggleWebcam}
+                        className="bg-red-950/40 hover:bg-red-900/40 text-red-400 border border-red-500/20 text-xs font-bold py-2 rounded-lg transition-colors mt-1"
+                      >
+                        Deactivate Camera Feed
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* RIGHT CONTAINER: DETAILED INCIDENT & MOCK MAP (7 cols) */}
+            <div className="lg:col-span-7 flex flex-col gap-6">
+              
+              {/* INTERACTIVE GEOGRAPHIC MOCK MAP AREA */}
+              <div className="glass-panel rounded-2xl p-4 flex flex-col gap-3 relative h-[320px] overflow-hidden">
+                <h3 className="text-sm font-bold text-slate-300 z-10 flex items-center gap-2">
+                  <i data-lucide="map" className="w-4 h-4 text-brand-500"></i>
+                  Tactical Surveillance Grid
+                </h3>
+                {/* Mock Map Background Graphics */}
+                <div className="absolute inset-0 bg-slate-950 opacity-90 flex items-center justify-center">
+                  <div className="absolute inset-0 opacity-20 pointer-events-none" style={{
+                    backgroundImage: 'radial-gradient(#3b82f6 1px, transparent 1px)',
+                    backgroundSize: '16px 16px'
+                  }}></div>
+                  
+                  {/* Map Grid Lines */}
+                  <svg className="w-full h-full absolute top-0 left-0 text-slate-900" xmlns="http://www.w3.org/2000/svg">
+                    <line x1="25%" y1="0" x2="25%" y2="100%" stroke="rgba(255,255,255,0.03)" strokeWidth="1" />
+                    <line x1="50%" y1="0" x2="50%" y2="100%" stroke="rgba(255,255,255,0.03)" strokeWidth="1" />
+                    <line x1="75%" y1="0" x2="75%" y2="100%" stroke="rgba(255,255,255,0.03)" strokeWidth="1" />
+                    <line x1="0" y1="30%" x2="100%" y2="30%" stroke="rgba(255,255,255,0.03)" strokeWidth="1" />
+                    <line x1="0" y1="60%" x2="100%" y2="60%" stroke="rgba(255,255,255,0.03)" strokeWidth="1" />
+                  </svg>
+                  
+                  {/* Nodes & Alerts Pins on map */}
+                  {nodes.map((n, idx) => (
+                    <div 
+                      key={n.id} 
+                      className="absolute cursor-pointer group flex flex-col items-center" 
+                      style={{ 
+                        left: idx === 0 ? '40%' : '70%', 
+                        top: idx === 0 ? '45%' : '65%' 
+                      }}
+                    >
+                      <div className="relative flex items-center justify-center">
+                        <span className={`absolute w-6 h-6 rounded-full opacity-60 beacon-ring ${
+                          n.status === 'ACTIVE' ? 'bg-emerald-500' : 'bg-yellow-500'
+                        }`}></span>
+                        <div className={`w-3.5 h-3.5 rounded-full border border-slate-950 z-10 ${
+                          n.status === 'ACTIVE' ? 'bg-emerald-500 shadow-[0_0_10px_#10b981]' : 'bg-yellow-500 shadow-[0_0_10px_#f59e0b]'
+                        }`}></div>
+                      </div>
+                      <span className="mt-1 text-[9px] font-bold bg-slate-900/90 text-slate-300 border border-gray-800 px-1.5 py-0.5 rounded shadow">
+                        {n.node_name.split(' ')[0]}
+                      </span>
+                    </div>
+                  ))}
+
+                  {/* Active alert blinking pin */}
+                  {alerts.filter(a => a.status === 'UNRESOLVED').map((a, idx) => (
+                    <div 
+                      key={a.id} 
+                      className="absolute cursor-pointer flex flex-col items-center animate-bounce z-20"
+                      style={{ 
+                        left: a.alert_type === 'WEAPON' ? '43%' : '73%', 
+                        top: a.alert_type === 'WEAPON' ? '43%' : '63%' 
+                      }}
+                    >
+                      <div className="relative flex items-center justify-center">
+                        <span className="absolute w-8 h-8 rounded-full bg-red-500 opacity-80 beacon-ring"></span>
+                        <i data-lucide="alert-triangle" className="w-5 h-5 text-red-500 fill-red-950/80 drop-shadow-[0_0_8px_rgba(239,68,68,0.8)] z-10"></i>
+                      </div>
+                    </div>
+                  ))}
+                  
+                  <span className="absolute bottom-2 right-3 text-[10px] text-gray-500 font-mono">MAP CENTER: BANGALORE GRID</span>
+                </div>
+              </div>
+
+              {/* DETAILED ALERT ACTIONS PANEL */}
+              {selectedAlert ? (
+                <div className="glass-panel rounded-2xl p-5 flex flex-col gap-4 border border-brand-500/20 relative">
+                  {/* Header info */}
+                  <div className="flex justify-between items-start border-b border-gray-800 pb-3">
+                    <div>
+                      <h3 className="text-xl font-bold text-slate-100 flex items-center gap-2">
+                        Incident Investigator
+                      </h3>
+                      <p className="text-xs text-gray-400 mt-0.5">UID: {selectedAlert.id}</p>
+                    </div>
+                    <button 
+                      onClick={() => setSelectedAlert(null)}
+                      className="text-gray-400 hover:text-white text-xs px-2.5 py-1.5 bg-slate-800/50 rounded-lg"
+                    >
+                      Close
+                    </button>
+                  </div>
+
+                  {/* Main Details and Image */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      {selectedAlert.image_url ? (
+                        <div className="relative rounded-xl overflow-hidden border border-slate-700 bg-slate-950">
+                          <img src={selectedAlert.image_url} alt="incident display" className="w-full h-[180px] object-cover" />
+                          <span className="absolute bottom-2 left-2 bg-slate-900/90 border border-slate-800 text-[10px] text-slate-400 px-2 py-0.5 rounded font-mono">
+                            CAMERA: C01_4K
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="h-[180px] bg-slate-950 border border-slate-700 rounded-xl flex items-center justify-center text-gray-500 font-medium">
+                          No visual evidence attachment
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex flex-col justify-between">
+                      <div className="flex flex-col gap-2">
+                        <div className="flex justify-between text-xs">
+                          <span className="text-gray-400">Class Type:</span>
+                          <span className="text-slate-200 font-bold">{selectedAlert.alert_type}</span>
+                        </div>
+                        <div className="flex justify-between text-xs">
+                          <span className="text-gray-400">Risk Assessment:</span>
+                          <span className={`font-extrabold ${selectedAlert.threat_level === 'CRITICAL' ? 'text-red-400' : 'text-orange-400'}`}>
+                            {selectedAlert.threat_level}
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-xs">
+                          <span className="text-gray-400">Latitude, Longitude:</span>
+                          <span className="text-slate-300 font-mono">{selectedAlert.latitude.toFixed(6)}, {selectedAlert.longitude.toFixed(6)}</span>
+                        </div>
+                        <div className="flex justify-between text-xs">
+                          <span className="text-gray-400">Telemetry Signature:</span>
+                          <span className="text-emerald-400 font-semibold font-mono text-[9px] truncate max-w-[150px]">
+                            VERIFIED_ECDSA_OK
+                          </span>
+                        </div>
+                        <div className="flex flex-col gap-1 mt-1 bg-slate-900/40 p-2.5 rounded-lg border border-gray-800">
+                          <span className="text-[10px] text-gray-500 uppercase font-semibold">Sensor Payload Meta</span>
+                          <pre className="text-[10px] font-mono text-slate-300 whitespace-pre-wrap">
+                            {JSON.stringify(selectedAlert.payload, null, 2)}
+                          </pre>
+                        </div>
+                      </div>
+
+                      {/* State Dispatch Controls */}
+                      <div className="flex gap-2 mt-4 md:mt-0">
+                        <button 
+                          onClick={() => handleUpdateAlertStatus(selectedAlert.id, 'DISPATCHED')}
+                          className="flex-1 bg-brand-600 hover:bg-brand-500 text-white font-bold py-2 px-3 rounded-lg text-xs transition-colors"
+                        >
+                          Dispatch Response Unit
+                        </button>
+                        <button 
+                          onClick={() => handleUpdateAlertStatus(selectedAlert.id, 'RESOLVED')}
+                          className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 px-3 rounded-lg text-xs transition-colors"
+                        >
+                          Resolve Alert
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="glass-panel rounded-2xl p-10 text-center text-gray-500 border border-dashed border-gray-800">
+                  <i data-lucide="info" className="w-8 h-8 text-slate-600 mx-auto mb-2"></i>
+                  Select an incident from the Live Stream to view details, verify signatures, and dispatch local forces.
+                </div>
+              )}
+            </div>
+
+          </div>
+
+          {/* NODE DETAILS MODAL SECTION */}
+          {selectedNodeDetails && (
+            <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="glass-panel w-full max-w-lg rounded-2xl p-6 border border-gray-800 shadow-2xl relative">
+                <div className="flex justify-between items-start border-b border-gray-800 pb-3 mb-4">
+                  <div>
+                    <h3 className="text-xl font-bold text-slate-100">{selectedNodeDetails.node_name}</h3>
+                    <p className="text-xs text-gray-400 font-mono mt-0.5">MAC: {selectedNodeDetails.mac_address}</p>
+                  </div>
+                  <button 
+                    onClick={() => setSelectedNodeDetails(null)}
+                    className="text-gray-400 hover:text-white"
+                  >
+                    <i data-lucide="x" className="w-5 h-5"></i>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-slate-900/50 p-3 rounded-xl border border-gray-800">
+                    <span className="text-[10px] text-gray-400 uppercase font-semibold block">Solar Generation</span>
+                    <span className="text-lg font-bold text-emerald-400">18.4 V / 4.5 A</span>
+                  </div>
+                  <div className="bg-slate-900/50 p-3 rounded-xl border border-gray-800">
+                    <span className="text-[10px] text-gray-400 uppercase font-semibold block">State of Charge</span>
+                    <span className="text-lg font-bold text-yellow-500">88%</span>
+                  </div>
+                  <div className="bg-slate-900/50 p-3 rounded-xl border border-gray-800">
+                    <span className="text-[10px] text-gray-400 uppercase font-semibold block">Inference Hardware Load</span>
+                    <span className="text-lg font-bold text-slate-300">GPU: 72% | 54.0°C</span>
+                  </div>
+                  <div className="bg-slate-900/50 p-3 rounded-xl border border-gray-800">
+                    <span className="text-[10px] text-gray-400 uppercase font-semibold block">Comms Mode</span>
+                    <span className="text-lg font-bold text-brand-500">WIFI (RSSI -68dB)</span>
+                  </div>
+                </div>
+
+                <div className="mt-5 border-t border-gray-800 pt-4">
+                  <span className="text-[10px] text-gray-400 uppercase font-semibold block mb-2">Cryptographic Public Key Identity</span>
+                  <pre className="text-[9px] font-mono text-gray-500 bg-slate-950 p-3 rounded-lg overflow-x-auto select-all max-h-[120px]">
+                    {selectedNodeDetails.public_key}
+                  </pre>
+                </div>
+              </div>
+            </div>
+          )}
+
+        </div>
+      );
+    }
+
+    const container = document.getElementById('root');
+    const root = ReactDOM.createRoot(container);
+    root.render(<App />);
+    
+    // Refresh icons after render
+    setTimeout(() => {
+      lucide.createIcons();
+    }, 100);
+  </script>
+</body>
+</html>

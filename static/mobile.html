@@ -1,0 +1,1581 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aegis Officer - Live Dispatch Command</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- FontAwesome & Google Fonts -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Share+Tech+Mono&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- Leaflet Map CSS & JS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+
+  <!-- Face API Script (Served from FastAPI static route) -->
+  <script src="/static/face-api.min.js"></script>
+
+  <!-- React & Babel -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone@7.26.10/babel.min.js"></script>
+
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: #030712;
+      color: #f3f4f6;
+      margin: 0;
+      padding: 0;
+      overflow-x: hidden;
+    }
+    .title-font {
+      font-family: 'Outfit', sans-serif;
+    }
+    .mono-font {
+      font-family: 'Share Tech Mono', monospace;
+    }
+    .glass-card {
+      background: rgba(17, 24, 39, 0.7);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    /* Pulse glow effect */
+    .danger-glow {
+      box-shadow: 0 0 15px rgba(239, 68, 68, 0.45);
+      animation: pulseGlow 2s infinite alternate;
+    }
+    @keyframes pulseGlow {
+      from { box-shadow: 0 0 10px rgba(239, 68, 68, 0.3); }
+      to { box-shadow: 0 0 25px rgba(239, 68, 68, 0.65); }
+    }
+    /* Map layout height */
+    #mobile-map {
+      height: 160px;
+      border-radius: 12px;
+      border: 1px solid rgba(6, 182, 212, 0.2);
+      z-index: 1;
+    }
+  </style>
+</head>
+<body>
+  
+  <div id="app-root"></div>
+
+  <script type="text/babel" data-presets="react" data-preset-options='{"react": {"runtime": "classic"}}'>
+    const { useState, useEffect, useRef } = React;
+
+    // ========== Feature 6: IndexedDB Offline Sync Helpers ==========
+    const IDB_NAME = 'aegis_officer_db';
+    const IDB_VERSION = 1;
+    const STORE_ALERTS = 'cached_alerts';
+    const STORE_QUEUE = 'sync_queue';
+
+    function openDB() {
+      return new Promise((resolve, reject) => {
+        const request = indexedDB.open(IDB_NAME, IDB_VERSION);
+        request.onupgradeneeded = (e) => {
+          const db = e.target.result;
+          if (!db.objectStoreNames.contains(STORE_ALERTS)) {
+            db.createObjectStore(STORE_ALERTS, { keyPath: 'id' });
+          }
+          if (!db.objectStoreNames.contains(STORE_QUEUE)) {
+            db.createObjectStore(STORE_QUEUE, { autoIncrement: true });
+          }
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+    }
+
+    async function cacheAlerts(alerts) {
+      try {
+        const db = await openDB();
+        const tx = db.transaction(STORE_ALERTS, 'readwrite');
+        const store = tx.objectStore(STORE_ALERTS);
+        store.clear();
+        alerts.forEach(a => store.put(a));
+      } catch (e) {
+        console.warn('IndexedDB cache write failed:', e);
+      }
+    }
+
+    async function getCachedAlerts() {
+      try {
+        const db = await openDB();
+        return new Promise((resolve) => {
+          const tx = db.transaction(STORE_ALERTS, 'readonly');
+          const store = tx.objectStore(STORE_ALERTS);
+          const req = store.getAll();
+          req.onsuccess = () => resolve(req.result || []);
+          req.onerror = () => resolve([]);
+        });
+      } catch (e) {
+        return [];
+      }
+    }
+
+    async function addToSyncQueue(action) {
+      try {
+        const db = await openDB();
+        const tx = db.transaction(STORE_QUEUE, 'readwrite');
+        tx.objectStore(STORE_QUEUE).put({ ...action, timestamp: new Date().toISOString() });
+      } catch (e) {
+        console.warn('Failed to queue offline action:', e);
+      }
+    }
+
+    async function getSyncQueue() {
+      try {
+        const db = await openDB();
+        return new Promise((resolve) => {
+          const tx = db.transaction(STORE_QUEUE, 'readonly');
+          const req = tx.objectStore(STORE_QUEUE).getAll();
+          req.onsuccess = () => resolve(req.result || []);
+          req.onerror = () => resolve([]);
+        });
+      } catch (e) {
+        return [];
+      }
+    }
+
+    async function clearSyncQueue() {
+      try {
+        const db = await openDB();
+        const tx = db.transaction(STORE_QUEUE, 'readwrite');
+        tx.objectStore(STORE_QUEUE).clear();
+      } catch (e) {
+        console.warn('Failed to clear sync queue:', e);
+      }
+    }
+    // ========== End IndexedDB Helpers ==========
+
+    function OfficerMobileApp() {
+      const [activeAlert, setActiveAlert] = useState(null);
+      const [history, setHistory] = useState([]);
+      const [cameraStream, setCameraStream] = useState(null);
+      const [cameraError, setCameraError] = useState(false);
+      const [loading, setLoading] = useState(true);
+      const [gpsActive, setGpsActive] = useState(true);
+      const [userCoords, setUserCoords] = useState({ latitude: 23.0225, longitude: 72.5714 });
+
+      // Bodycam Streaming & Device Selection States
+      const [videoDevices, setVideoDevices] = useState([]);
+      const [selectedDeviceId, setSelectedDeviceId] = useState('');
+      const [isStreaming, setIsStreaming] = useState(false);
+
+      // Feature 6: Offline sync state
+      const [isOnline, setIsOnline] = useState(navigator.onLine);
+      const [pendingSyncCount, setPendingSyncCount] = useState(0);
+
+      // Advanced Mobile States
+      const [voiceEnabled, setVoiceEnabled] = useState(true);
+      const [resolutionNotes, setResolutionNotes] = useState('');
+      const [isDictating, setIsDictating] = useState(false);
+      const [etaMinutes, setEtaMinutes] = useState(null);
+      const [mobileFeedSource, setMobileFeedSource] = useState('bodycam');
+      const [remoteCctvFrame, setRemoteCctvFrame] = useState(null);
+
+      // Next-Gen Mobile States
+      const [modelsLoaded, setModelsLoaded] = useState(false);
+      const [suspectMatchName, setSuspectMatchName] = useState('AWAITING PHOTO...');
+      const [suspectConfidence, setSuspectConfidence] = useState(0);
+      const [isScanningBiometrics, setIsScanningBiometrics] = useState(false);
+      const [geofenceBreach, setGeofenceBreach] = useState(false);
+
+      const videoRef = useRef(null);
+      const mapInstanceRef = useRef(null);
+      const markerRef = useRef(null);
+      const officerMarkerRef = useRef(null);
+      const routeLineRef = useRef(null);
+      const faceMatcherRef = useRef(null);
+      const labeledDescriptorsRef = useRef([]);
+      const wsRef = useRef(null);
+      const cctvCanvasRef = useRef(null);
+      const cctvImgRef = useRef(null);
+
+      // Geolocation listener to get real device coordinates
+      useEffect(() => {
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            (position) => {
+              const lat = position.coords.latitude;
+              const lng = position.coords.longitude;
+              // Bounds check for Ahmedabad region
+              if (lat > 22.8 && lat < 23.2 && lng > 72.4 && lng < 72.8) {
+                setUserCoords({ latitude: lat, longitude: lng });
+              } else {
+                setUserCoords({ latitude: 23.0225, longitude: 72.5714 });
+              }
+            },
+            () => {
+              setUserCoords({ latitude: 23.0225, longitude: 72.5714 });
+            },
+            { enableHighAccuracy: true, timeout: 10000 }
+          );
+        }
+      }, []);
+
+      // 1. Get alert_id from URL Query Parameters
+      const getUrlAlertId = () => {
+        const params = new URLSearchParams(window.location.search);
+        return params.get('alert_id');
+      };
+
+      // 2. Fetch Active Alert & History (with IndexedDB offline cache)
+      const loadAlertsData = async () => {
+        const targetId = getUrlAlertId();
+        try {
+          const resp = await fetch('/api/v1/alerts');
+          if (resp.ok) {
+            const data = await resp.json();
+            const sorted = data.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+            
+            // Cache alerts to IndexedDB for offline access
+            cacheAlerts(sorted);
+            
+            // Set history
+            setHistory(sorted);
+
+            // Find specific dispatched alert or fallback to latest dispatched/acknowledged
+            let selected = null;
+            if (targetId) {
+              selected = sorted.find(a => a.id === targetId);
+            }
+            if (!selected) {
+              // Fallback to most recent DISPATCHED/ACKNOWLEDGED alert
+              selected = sorted.find(a => a.status === 'DISPATCHED' || a.status === 'ACKNOWLEDGED');
+            }
+            setActiveAlert(prev => {
+              if (selected && selected.status !== 'RESOLVED' && (!prev || prev.id !== selected.id)) {
+                setTimeout(() => speakDispatch(selected), 800);
+              }
+              return selected;
+            });
+            setIsOnline(true);
+          }
+        } catch (e) {
+          console.error("Offline — loading cached alerts from IndexedDB");
+          setIsOnline(false);
+          // Load from IndexedDB cache first, fallback to mock data
+          const cachedAlerts = await getCachedAlerts();
+          if (cachedAlerts.length > 0) {
+            const sorted = cachedAlerts.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+            setHistory(sorted);
+            let selected = targetId ? sorted.find(a => a.id === targetId) : null;
+            if (!selected) selected = sorted.find(a => a.status === 'DISPATCHED' || a.status === 'ACKNOWLEDGED');
+            setActiveAlert(prev => {
+              if (selected && selected.status !== 'RESOLVED' && (!prev || prev.id !== selected.id)) {
+                setTimeout(() => speakDispatch(selected), 800);
+              }
+              return selected;
+            });
+          } else {
+            const mockItems = [
+              { id: '1', alert_type: 'CRIMINAL MATCH', threat_level: 'CRITICAL', status: 'DISPATCHED', latitude: 23.0225, longitude: 72.5714, created_at: new Date().toISOString(), payload: { suspect: "WANTED BLACKLISTED PROFILE", confidence: 0.92 } },
+              { id: '2', alert_type: 'WEAPON DETECTION', threat_level: 'HIGH', status: 'RESOLVED', latitude: 23.0225, longitude: 72.5714, created_at: new Date(Date.now() - 300000).toISOString(), payload: { weapon: "Handgun", confidence: 0.89 } }
+            ];
+            setHistory(mockItems);
+            setActiveAlert(mockItems[0]);
+          }
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      // 3. Initialize and Sync Map with Route Pathfinder & Geofencing (Feature 6)
+      useEffect(() => {
+        if (!activeAlert) return;
+
+        let lat = activeAlert.latitude || 23.0225;
+        let lng = activeAlert.longitude || 72.5714;
+
+        if (lat === 23.0225 && lng === 72.5714) {
+          lat = userCoords.latitude;
+          lng = userCoords.longitude;
+        }
+
+        const mapContainer = document.getElementById('mobile-map');
+        if (!mapContainer) return;
+
+        const start = [userCoords.latitude, userCoords.longitude];
+        const end = [lat, lng];
+        const midPoint = [lat, userCoords.longitude];
+        const pathPoints = [start, midPoint, end];
+
+        // Check if the incident is within the Ahmedabad High-Security Geofence Zone
+        // Boundary bounds: Latitude [23.010, 23.035], Longitude [72.560, 72.585]
+        const isInside = lat >= 23.010 && lat <= 23.035 && lng >= 72.560 && lng <= 72.585;
+        setGeofenceBreach(isInside);
+
+        const geofenceCoords = [
+          [23.035, 72.560], // North West
+          [23.035, 72.585], // North East
+          [23.010, 72.585], // South East
+          [23.010, 72.560]  // South West
+        ];
+
+        if (!mapInstanceRef.current) {
+          const map = L.map('mobile-map', {
+            zoomControl: false,
+            attributionControl: false
+          }).setView([lat, lng], 15);
+
+          L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            maxZoom: 20
+          }).addTo(map);
+
+          // Threat location (Red circle)
+          const customMarker = L.circle([lat, lng], {
+            color: '#ef4444',
+            fillColor: '#ef4444',
+            fillOpacity: 0.4,
+            radius: 120
+          }).addTo(map);
+
+          // Officer location (Cyan circle)
+          const officerMarker = L.circle(start, {
+            color: '#00f2fe',
+            fillColor: '#00f2fe',
+            fillOpacity: 0.7,
+            radius: 40
+          }).addTo(map);
+
+          // Draw High-Security Geofence Zone (semi-transparent red polygon)
+          const geofencePolygon = L.polygon(geofenceCoords, {
+            color: '#f43f5e',
+            fillColor: '#f43f5e',
+            fillOpacity: 0.12,
+            weight: 2,
+            dashArray: '4, 6'
+          }).addTo(map);
+          geofencePolygon.bindPopup("<strong style='color:#ef4444;'>HIGH-SECURITY ZONE ALPHA</strong><br/>Restricted Geofenced Area.");
+
+          // Pathfinder Route (Cyan dashed)
+          const polyline = L.polyline(pathPoints, {
+            color: '#00f2fe',
+            weight: 4,
+            opacity: 0.8,
+            dashArray: '5, 8'
+          }).addTo(map);
+
+          mapInstanceRef.current = map;
+          markerRef.current = customMarker;
+          officerMarkerRef.current = officerMarker;
+          routeLineRef.current = polyline;
+
+          try {
+            const bounds = L.latLngBounds([start, end]);
+            map.fitBounds(bounds, { padding: [30, 30] });
+          } catch (e) {}
+        } else {
+          // Relocate existing map elements
+          const map = mapInstanceRef.current;
+          if (markerRef.current) {
+            markerRef.current.setLatLng([lat, lng]);
+          }
+          if (officerMarkerRef.current) {
+            officerMarkerRef.current.setLatLng(start);
+          }
+          if (routeLineRef.current) {
+            routeLineRef.current.setLatLngs(pathPoints);
+          } else {
+            const polyline = L.polyline(pathPoints, {
+              color: '#00f2fe',
+              weight: 4,
+              opacity: 0.8,
+              dashArray: '5, 8'
+            }).addTo(map);
+            routeLineRef.current = polyline;
+          }
+
+          try {
+            const bounds = L.latLngBounds([start, end]);
+            map.fitBounds(bounds, { padding: [30, 30] });
+          } catch (e) {}
+        }
+      }, [activeAlert, userCoords]);
+
+      // 4. Load available camera devices
+      const loadVideoDevices = async () => {
+        try {
+          // Quick stream request to ensure browser permissions are set and device labels are populated
+          const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
+          tempStream.getTracks().forEach(t => t.stop());
+
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const videoInputs = devices.filter(d => d.kind === 'videoinput');
+          setVideoDevices(videoInputs);
+          if (videoInputs.length > 0 && !selectedDeviceId) {
+            setSelectedDeviceId(videoInputs[0].deviceId);
+          }
+        } catch (e) {
+          console.warn("Failed to list camera devices:", e);
+        }
+      };
+
+      useEffect(() => {
+        loadVideoDevices();
+      }, []);
+
+      // Start/Restart camera stream based on selected device ID
+      useEffect(() => {
+        let activeStream = null;
+        const startWebcam = async () => {
+          if (cameraStream) {
+            cameraStream.getTracks().forEach(track => track.stop());
+          }
+          try {
+            const constraints = selectedDeviceId 
+              ? { video: { deviceId: { exact: selectedDeviceId }, width: 400, height: 300 } }
+              : { video: { width: 400, height: 300 } };
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            activeStream = stream;
+            setCameraStream(stream);
+            if (videoRef.current) {
+              videoRef.current.srcObject = stream;
+              videoRef.current.onloadedmetadata = () => {
+                videoRef.current.play().catch(e => console.error("Error playing video:", e));
+              };
+            }
+            setCameraError(false);
+          } catch (err) {
+            console.warn("Field bodycam stream unavailable (permission or hardware block).", err);
+            setCameraError(true);
+          }
+        };
+
+        if (selectedDeviceId || videoDevices.length === 0) {
+          startWebcam();
+        }
+
+        return () => {
+          if (activeStream) {
+            activeStream.getTracks().forEach(t => t.stop());
+          }
+        };
+      }, [selectedDeviceId]);
+
+      // WebSocket Frame Broadcaster
+      useEffect(() => {
+        if (!isStreaming) {
+          if (wsRef.current) {
+            wsRef.current.close();
+            wsRef.current = null;
+          }
+          return;
+        }
+
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = window.location.host || 'localhost:8000';
+        const wsUrl = `${protocol}//${host}/api/v1/bodycam/stream`;
+        
+        console.log("Connecting bodycam socket to:", wsUrl);
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          console.log("Bodycam stream connected to backend");
+        };
+        ws.onerror = (e) => {
+          console.error("Bodycam stream error:", e);
+        };
+        ws.onclose = () => {
+          console.log("Bodycam stream closed");
+          setIsStreaming(false);
+        };
+
+        // Frame grabbing loop (hidden canvas)
+        const canvas = document.createElement('canvas');
+        canvas.width = 400;
+        canvas.height = 300;
+        const ctx = canvas.getContext('2d');
+
+        const intervalId = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            try {
+              if (videoRef.current && cameraStream) {
+                // Draw real camera preview frame
+                ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+              } else {
+                // Generate a premium simulated bodycam feed
+                ctx.fillStyle = '#020617';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                
+                // Draw tactical grids
+                ctx.strokeStyle = 'rgba(6, 182, 212, 0.15)';
+                ctx.lineWidth = 1;
+                for (let i = 0; i < canvas.width; i += 20) {
+                  ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, canvas.height); ctx.stroke();
+                }
+                for (let i = 0; i < canvas.height; i += 20) {
+                  ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(canvas.width, i); ctx.stroke();
+                }
+                
+                // Watermark & text labels
+                ctx.fillStyle = '#22d3ee';
+                ctx.font = 'bold 9px monospace';
+                ctx.fillText('🔴 SHIELD UNIT-09 BODYCAM (SIM)', 20, 30);
+                ctx.fillText(`GPS: ${userCoords.latitude.toFixed(4)} N / ${userCoords.longitude.toFixed(4)} E`, 20, 42);
+                ctx.fillText('STATUS: IN TRANSIT / EN-ROUTE', 20, 54);
+                
+                const timeStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
+                ctx.fillText(timeStr, 20, canvas.height - 20);
+                
+                // Animated tracking radar circle/wave
+                ctx.strokeStyle = '#22d3ee';
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                const timeOffset = Date.now() / 150;
+                for (let x = 0; x < canvas.width - 40; x++) {
+                  const y = canvas.height / 2 + 10 + Math.sin(x * 0.05 + timeOffset) * 12;
+                  if (x === 0) ctx.moveTo(x + 20, y);
+                  else ctx.lineTo(x + 20, y);
+                }
+                ctx.stroke();
+              }
+
+              const dataUrl = canvas.toDataURL('image/jpeg', 0.5);
+              const payload = {
+                officer_id: "SHIELD-UNIT-09",
+                image: dataUrl,
+                timestamp: new Date().toISOString()
+              };
+              ws.send(JSON.stringify(payload));
+            } catch (e) {
+              console.error("Error capturing/sending frame:", e);
+            }
+          }
+        }, 150); // ~7 FPS
+
+        return () => {
+          clearInterval(intervalId);
+          if (wsRef.current) {
+            wsRef.current.close();
+            wsRef.current = null;
+          }
+        };
+      }, [isStreaming, cameraStream]);
+
+      // 5. Connect to SSE alert feed for real-time dispatch events
+      useEffect(() => {
+        loadAlertsData();
+        initMobileFaceAPI();
+
+        const eventSource = new EventSource('/api/v1/alerts/feed');
+        eventSource.onmessage = (event) => {
+          try {
+            const newAlert = JSON.parse(event.data);
+            // Reload all lists on any update to ensure synchronization
+            loadAlertsData();
+            
+            // Play brief notification beep on dispatch
+            if (newAlert.status === 'DISPATCHED') {
+              playMobileBeep();
+            }
+          } catch (e) {
+            console.error("SSE parsing failure", e);
+          }
+        };
+
+        return () => {
+          eventSource.close();
+        };
+      }, []);
+
+      // Next-Gen Mobile biometrics and navigation helper functions
+      const initMobileFaceAPI = async () => {
+        const MODEL_URL = '/static/models/';
+        try {
+          await Promise.all([
+            faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
+            faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+            faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
+          ]);
+          setModelsLoaded(true);
+          console.log('[Mobile] Biometrics Models Loaded successfully');
+          
+          // Load face profiles from backend (fall back to localStorage)
+          let loaded = false;
+          try {
+            const faceResp = await fetch('/api/v1/faces');
+            if (faceResp.ok) {
+              const facesData = await faceResp.json();
+              if (facesData.length > 0) {
+                labeledDescriptorsRef.current = facesData.map(data => {
+                  const descArray = data.descriptors.map(d => new Float32Array(d));
+                  const ld = new faceapi.LabeledFaceDescriptors(data.label, descArray);
+                  ld.isWanted = data.is_wanted || false;
+                  return ld;
+                });
+                loaded = true;
+              }
+            }
+          } catch(e) {}
+
+          if (!loaded) {
+            const savedData = localStorage.getItem('aegis_faces');
+            if (savedData) {
+              const parsed = JSON.parse(savedData);
+              labeledDescriptorsRef.current = parsed.map(data => {
+                const descArray = data.descriptors.map(d => new Float32Array(Object.values(d)));
+                const ld = new faceapi.LabeledFaceDescriptors(data.label, descArray);
+                ld.isWanted = data.isWanted || false;
+                return ld;
+              });
+            }
+          }
+
+          if (labeledDescriptorsRef.current.length > 0) {
+            faceMatcherRef.current = new faceapi.FaceMatcher(labeledDescriptorsRef.current, 0.60);
+          } else {
+            faceMatcherRef.current = new faceapi.FaceMatcher([new faceapi.LabeledFaceDescriptors('placeholder', [new Float32Array(128)])], 0.60);
+          }
+        } catch (err) {
+          console.error("Mobile Face-API load error:", err);
+        }
+      };
+
+      const identifySuspect = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        if (!modelsLoaded || !faceMatcherRef.current) {
+          alert("AI Biometrics engines are loading. Please wait...");
+          return;
+        }
+
+        setIsScanningBiometrics(true);
+        setSuspectMatchName("ANALYZING...");
+        setSuspectConfidence(0);
+        playMobileBeep();
+
+        try {
+          const img = await faceapi.bufferToImage(file);
+          const detections = await faceapi.detectAllFaces(img).withFaceLandmarks().withFaceDescriptors();
+
+          if (detections && detections.length > 0) {
+            const largestFace = detections.reduce((prev, curr) => (prev.detection.box.width > curr.detection.box.width) ? prev : curr);
+            const match = faceMatcherRef.current.findBestMatch(largestFace.descriptor);
+            const distPercent = Math.round((1 - match.distance) * 100);
+
+            const profile = labeledDescriptorsRef.current.find(ld => ld.label === match.label);
+            const isWanted = profile && profile.isWanted;
+
+            if (match.label === 'unknown' || match.label === 'placeholder') {
+              setSuspectMatchName("UNKNOWN CITIZEN / SUSPECT");
+              setSuspectConfidence(distPercent);
+              alert("WARNING: Suspect face did not match any database profile.");
+            } else {
+              const matchType = isWanted ? "🔴 WANTED FUGITIVE" : "🟢 IDENTIFIED CITIZEN";
+              setSuspectMatchName(`${matchType}: ${match.label}`);
+              setSuspectConfidence(distPercent);
+              
+              if (isWanted) {
+                playEmergencyBuzzer();
+                alert(`⚠️ CRITICAL THREAT: Identified Wanted Suspect: ${match.label} [Confidence: ${distPercent}%]!`);
+              } else {
+                alert(`Identified Citizen: ${match.label} [Confidence: ${distPercent}%]`);
+              }
+            }
+          } else {
+            setSuspectMatchName("NO FACE DETECTED");
+            alert("Analysis failed: No facial biometric markers detected in the photo.");
+          }
+        } catch(err) {
+          console.error(err);
+          setSuspectMatchName("ERROR SCANNING");
+          alert("Biometric analysis error occurred.");
+        } finally {
+          setIsScanningBiometrics(false);
+          e.target.value = '';
+        }
+      };
+
+      const playEmergencyBuzzer = () => {
+        try {
+          const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = 'sawtooth';
+          osc.frequency.setValueAtTime(900, audioCtx.currentTime);
+          gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+          osc.connect(gain);
+          gain.connect(audioCtx.destination);
+          osc.start();
+          osc.stop(audioCtx.currentTime + 0.6);
+        } catch(e) {}
+      };
+
+      const getNavigationSteps = (user, threat) => {
+        if (!user || !threat) return [];
+        const dy = threat.latitude - user.latitude;
+        const dx = threat.longitude - user.longitude;
+
+        const steps = [];
+        if (Math.abs(dy) < 0.0001 && Math.abs(dx) < 0.0001) {
+          return ["📍 Arrived at Threat Location. Deploy and secure zone."];
+        }
+
+        steps.push("🚨 Operational Dispatch Route Engaged:");
+        
+        if (dy > 0) {
+          steps.push(`🚶 Head North toward Ashram Road (Ahmedabad) — ${Math.round(Math.abs(dy) * 110000)}m`);
+        } else {
+          steps.push(`🚶 Head South toward Nehru Bridge — ${Math.round(Math.abs(dy) * 110000)}m`);
+        }
+
+        if (dx > 0) {
+          steps.push(`🚴 Turn Right onto Nehru Bridge — ${Math.round(Math.abs(dx) * 110000)}m`);
+        } else {
+          steps.push(`🚴 Turn Left onto Sabarmati Riverfront Road — ${Math.round(Math.abs(dx) * 110000)}m`);
+        }
+
+        steps.push("🎯 Turn toward target coordinates. Secure secondary perimeter.");
+        return steps;
+      };
+
+      const playMobileBeep = () => {
+        try {
+          const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+          gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+          osc.connect(gain);
+          gain.connect(audioCtx.destination);
+          osc.start();
+          osc.stop(audioCtx.currentTime + 0.15);
+        } catch (e) {}
+      };
+
+      // Voice synthesis dispatch call (text-to-speech)
+      const speakDispatch = (alert) => {
+        if (!voiceEnabled || !alert) return;
+        try {
+          window.speechSynthesis.cancel();
+          const speechText = `Attention Shield Unit 09: Dispatch assignment received. Risk priority is ${alert.threat_level}. Incident classification is ${alert.alert_type.replace('_', ' ')}. Respond immediately.`;
+          const utterance = new SpeechSynthesisUtterance(speechText);
+          utterance.rate = 0.95;
+          utterance.pitch = 0.85;
+          
+          const voices = window.speechSynthesis.getVoices();
+          const englishVoice = voices.find(v => v.lang.startsWith('en') && v.name.includes('Google')) || voices.find(v => v.lang.startsWith('en'));
+          if (englishVoice) {
+            utterance.voice = englishVoice;
+          }
+          window.speechSynthesis.speak(utterance);
+        } catch (e) {
+          console.warn("Speech synthesis failed:", e);
+        }
+      };
+
+      // Voice dictation (speech-to-text) for incident notes
+      const startVoiceDictation = () => {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+          alert("Speech recognition is not supported in this browser. Please use Google Chrome.");
+          return;
+        }
+
+        try {
+          const rec = new SpeechRecognition();
+          rec.lang = 'en-US';
+          rec.interimResults = false;
+          rec.maxAlternatives = 1;
+
+          rec.onstart = () => {
+            setIsDictating(true);
+            playMobileBeep();
+          };
+
+          rec.onresult = (event) => {
+            const transcript = event.results[0][0].transcript;
+            setResolutionNotes(prev => {
+              const separator = prev ? '. ' : '';
+              return prev + separator + transcript;
+            });
+          };
+
+          rec.onerror = (err) => {
+            console.error("Speech recognition error:", err);
+            setIsDictating(false);
+          };
+
+          rec.onend = () => {
+            setIsDictating(false);
+            playMobileBeep();
+          };
+
+          rec.start();
+        } catch (e) {
+          console.error("Failed to start speech recognition:", e);
+          setIsDictating(false);
+        }
+      };
+
+      // Acknowledge dispatch
+      const acknowledgeDispatch = async () => {
+        if (!activeAlert) return;
+        try {
+          const resp = await fetch(`/api/v1/alerts/${activeAlert.id}/status`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'ACKNOWLEDGED' })
+          });
+          if (!resp.ok) throw new Error(`HTTP error! status: ${resp.status}`);
+          playMobileBeep();
+          loadAlertsData();
+        } catch (err) {
+          // Queue offline
+          await addToSyncQueue({
+            type: 'RESOLVE',
+            alertId: activeAlert.id,
+            newStatus: 'ACKNOWLEDGED'
+          });
+          setActiveAlert(prev => ({ ...prev, status: 'ACKNOWLEDGED' }));
+          setHistory(prev => prev.map(h => h.id === activeAlert.id ? { ...h, status: 'ACKNOWLEDGED' } : h));
+          const queue = await getSyncQueue();
+          setPendingSyncCount(queue.length);
+          alert("ACKNOWLEDGED LOCALLY: Call status queued for sync.");
+        }
+      };
+
+      // Send simulated ETA update
+      const reportETA = () => {
+        if (!activeAlert) return;
+        playMobileBeep();
+        const mins = Math.floor(Math.random() * 5) + 2; // 2 to 6 minutes
+        setEtaMinutes(mins);
+        alert(`ETA REPORTED: Inbound in approximately ${mins} minutes. Command log updated.`);
+      };
+
+      // 6. Action to Resolve Dispatch (with offline queue & resolution notes)
+      const resolveActiveDispatch = async () => {
+        if (!activeAlert) return;
+        const notesToSend = resolutionNotes.trim() || "Incident resolved successfully by Field Unit 09.";
+        try {
+          const resp = await fetch(`/api/v1/alerts/${activeAlert.id}/status`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+              status: 'RESOLVED',
+              notes: notesToSend
+            })
+          });
+          if (!resp.ok) {
+            throw new Error(`HTTP error! status: ${resp.status}`);
+          }
+          playMobileBeep();
+          setResolutionNotes("");
+          setEtaMinutes(null);
+          loadAlertsData();
+          alert("DISPATCH RESOLVED: Incident report closed with resolution notes.");
+        } catch (err) {
+          // Queue the resolve action for later sync
+          await addToSyncQueue({
+            type: 'RESOLVE',
+            alertId: activeAlert.id,
+            newStatus: 'RESOLVED',
+            notes: notesToSend
+          });
+          // Local UI update
+          setActiveAlert(prev => ({ 
+            ...prev, 
+            status: 'RESOLVED',
+            payload: { ...prev.payload, resolution_notes: notesToSend }
+          }));
+          setHistory(prev => prev.map(h => h.id === activeAlert.id ? { 
+            ...h, 
+            status: 'RESOLVED',
+            payload: { ...h.payload, resolution_notes: notesToSend }
+          } : h));
+          // Update cached data
+          const updatedHistory = history.map(h => h.id === activeAlert.id ? { 
+            ...h, 
+            status: 'RESOLVED',
+            payload: { ...h.payload, resolution_notes: notesToSend }
+          } : h);
+          cacheAlerts(updatedHistory);
+          // Refresh pending count
+          const queue = await getSyncQueue();
+          setPendingSyncCount(queue.length);
+          alert("RESOLVED LOCALLY: Action + notes queued for sync when online.");
+        }
+      };
+
+      // Feature 6: Process offline sync queue when back online
+      const processSyncQueue = async () => {
+        const queue = await getSyncQueue();
+        if (queue.length === 0) return;
+        
+        let successCount = 0;
+        for (const action of queue) {
+          try {
+            if (action.type === 'RESOLVE') {
+              const resp = await fetch(`/api/v1/alerts/${action.alertId}/status`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                  status: action.newStatus,
+                  notes: action.notes
+                })
+              });
+              if (resp.ok) successCount++;
+            }
+          } catch (e) {
+            console.warn('Sync failed for action:', action, e);
+            return;
+          }
+        }
+        
+        if (successCount === queue.length) {
+          await clearSyncQueue();
+          setPendingSyncCount(0);
+          playMobileBeep();
+          console.log(`[SYNC] Successfully synced ${successCount} offline actions`);
+          loadAlertsData();
+        }
+      };
+
+      // Feature 6: Online/offline event listeners + sync queue check
+      useEffect(() => {
+        const handleOnline = () => {
+          setIsOnline(true);
+          processSyncQueue();
+        };
+        const handleOffline = () => setIsOnline(false);
+        
+        window.addEventListener('online', handleOnline);
+        window.addEventListener('offline', handleOffline);
+        
+        // Check pending sync count on mount
+        getSyncQueue().then(q => setPendingSyncCount(q.length));
+        
+        // Periodic sync retry every 15 seconds
+        const syncInterval = setInterval(() => {
+          if (navigator.onLine) processSyncQueue();
+        }, 15000);
+        
+        return () => {
+          window.removeEventListener('online', handleOnline);
+          window.removeEventListener('offline', handleOffline);
+          clearInterval(syncInterval);
+        };
+      }, []);
+
+      // Auto-broadcast bodycam stream when dispatch call is active (DISPATCHED or ACKNOWLEDGED)
+      useEffect(() => {
+        if (activeAlert && (activeAlert.status === 'DISPATCHED' || activeAlert.status === 'ACKNOWLEDGED')) {
+          setIsStreaming(true);
+        } else {
+          setIsStreaming(false);
+        }
+      }, [activeAlert]);
+
+      // WebSocket CCTV Stream Receiver
+      useEffect(() => {
+        if (mobileFeedSource !== 'cctv') {
+          setRemoteCctvFrame(null);
+          return;
+        }
+
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = window.location.host || 'localhost:8000';
+        const wsUrl = `${protocol}//${host}/api/v1/bodycam/stream`;
+        
+        console.log("Mobile connecting to CCTV stream WebSocket:", wsUrl);
+        const ws = new WebSocket(wsUrl);
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.node_id && data.image) {
+              setRemoteCctvFrame(data.image);
+            }
+          } catch (e) {}
+        };
+
+        return () => {
+          ws.close();
+        };
+      }, [mobileFeedSource]);
+
+      // Simulated/Live CCTV night-vision telemetry stream
+      useEffect(() => {
+        if (mobileFeedSource !== 'cctv') return;
+        let active = true;
+        let scanY = 0;
+        let targetX1 = 120, targetY1 = 80;
+        let targetX2 = 250, targetY2 = 180;
+        let dx1 = 1.2, dy1 = 0.6;
+        let dx2 = -0.8, dy2 = -1.2;
+
+        const drawCCTV = () => {
+          if (!active) return;
+          const canvas = cctvCanvasRef.current;
+          if (!canvas) {
+            requestAnimationFrame(drawCCTV);
+            return;
+          }
+          const ctx = canvas.getContext('2d');
+          const w = canvas.width = 400;
+          const h = canvas.height = 300;
+
+          // Check if we have a real frame from the CCTV WebSocket
+          if (remoteCctvFrame && cctvImgRef.current && cctvImgRef.current.complete && cctvImgRef.current.naturalWidth > 0) {
+            ctx.drawImage(cctvImgRef.current, 0, 0, w, h);
+            
+            // Apply green night-vision matrix tint overlay
+            ctx.fillStyle = 'rgba(16, 185, 129, 0.20)';
+            ctx.globalCompositeOperation = 'color';
+            ctx.fillRect(0, 0, w, h);
+            ctx.globalCompositeOperation = 'source-over';
+          } else {
+            // Fallback dark green background
+            ctx.fillStyle = '#010803';
+            ctx.fillRect(0, 0, w, h);
+          }
+
+          // CCTV Night Vision grid lines
+          ctx.strokeStyle = 'rgba(16, 185, 129, 0.12)';
+          ctx.lineWidth = 1;
+          for (let i = 0; i < w; i += 25) {
+            ctx.beginPath();
+            ctx.moveTo(i, 0);
+            ctx.lineTo(i, h);
+            ctx.stroke();
+          }
+          for (let i = 0; i < h; i += 25) {
+            ctx.beginPath();
+            ctx.moveTo(0, i);
+            ctx.lineTo(w, i);
+            ctx.stroke();
+          }
+
+          // Center viewfinder lines
+          ctx.strokeStyle = 'rgba(16, 185, 129, 0.35)';
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.moveTo(w / 2 - 12, h / 2); ctx.lineTo(w / 2 + 12, h / 2);
+          ctx.moveTo(w / 2, h / 2 - 12); ctx.lineTo(w / 2, h / 2 + 12);
+          ctx.stroke();
+          
+          ctx.beginPath();
+          ctx.arc(w / 2, h / 2, 6, 0, Math.PI * 2);
+          ctx.stroke();
+
+          // Animate and boundary-check target coordinates
+          targetX1 += dx1; targetY1 += dy1;
+          if (targetX1 < 30 || targetX1 > w - 110) dx1 = -dx1;
+          if (targetY1 < 30 || targetY1 > h - 110) dy1 = -dy1;
+
+          targetX2 += dx2; targetY2 += dy2;
+          if (targetX2 < 30 || targetX2 > w - 110) dx2 = -dx2;
+          if (targetY2 < 30 || targetY2 > h - 110) dy2 = -dy2;
+
+          // Draw weapon detection target box (Red) if type is WEAPON or simulated
+          const threatType = activeAlert ? activeAlert.alert_type : "WEAPON";
+          const hasWeapon = threatType === 'WEAPON' || threatType === 'VIOLENCE';
+          
+          ctx.strokeStyle = hasWeapon ? '#f43f5e' : '#10b981';
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(targetX1, targetY1, 65, 65);
+          ctx.fillStyle = hasWeapon ? '#f43f5e' : '#10b981';
+          ctx.font = 'bold 8px monospace';
+          ctx.fillRect(targetX1, targetY1 - 14, 70, 14);
+          ctx.fillStyle = '#000';
+          ctx.fillText(hasWeapon ? 'TARGET: WEAPON' : 'TARGET: CITIZEN', targetX1 + 4, targetY1 - 4);
+
+          // Draw criminal match target box (Amber)
+          const isCriminal = threatType === 'CRIMINAL_MATCH' || threatType === 'GEOFENCE_BREACH';
+          ctx.strokeStyle = isCriminal ? '#f59e0b' : '#10b981';
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(targetX2, targetY2, 55, 55);
+          ctx.fillStyle = isCriminal ? '#f59e0b' : '#10b981';
+          ctx.fillRect(targetX2, targetY2 - 14, 70, 14);
+          ctx.fillStyle = '#000';
+          ctx.fillText(isCriminal ? 'TARGET: SUSPECT' : 'TARGET: TRACKED', targetX2 + 4, targetY2 - 4);
+
+          // Draw vertical scanning line
+          scanY = (scanY + 1.8) % h;
+          ctx.fillStyle = 'rgba(16, 185, 129, 0.05)';
+          ctx.fillRect(0, scanY - 6, w, 12);
+          ctx.strokeStyle = 'rgba(16, 185, 129, 0.22)';
+          ctx.beginPath(); ctx.moveTo(0, scanY); ctx.lineTo(w, scanY); ctx.stroke();
+
+          // Overlay telemetry metadata
+          ctx.fillStyle = '#10b981';
+          ctx.font = '8px monospace';
+          ctx.fillText(remoteCctvFrame ? `CAM TYPE: EDGE CCTV LIVE FEED` : `CAM TYPE: EDGE CCTV SIMULATOR`, 15, 25);
+          ctx.fillText(`INCIDENT NODE ID: ${activeAlert ? activeAlert.node_id.slice(0, 8) : 'N/A'}...`, 15, 36);
+          ctx.fillText(`GPS COORDS: ${activeAlert ? activeAlert.latitude.toFixed(4) : '23.0225'} N / ${activeAlert ? activeAlert.longitude.toFixed(4) : '72.5714'} E`, 15, 47);
+          
+          const timeStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
+          ctx.fillText(timeStr, w - 135, 25);
+          ctx.fillText(`THREAT PRIORITY: ${activeAlert ? activeAlert.threat_level : 'CRITICAL'}`, w - 135, 36);
+
+          // Flashing REC indicator
+          if (Math.floor(Date.now() / 500) % 2 === 0) {
+            ctx.fillStyle = '#ef4444';
+            ctx.beginPath();
+            ctx.arc(w - 20, 48, 3.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#10b981';
+            ctx.fillText('REC', w - 42, 51);
+          }
+
+          // Static noise effect
+          ctx.fillStyle = 'rgba(16, 185, 129, 0.02)';
+          for (let k = 0; k < 60; k++) {
+            ctx.fillRect(Math.random() * w, Math.random() * h, 1, 1);
+          }
+
+          if (active) {
+            requestAnimationFrame(drawCCTV);
+          }
+        };
+
+        requestAnimationFrame(drawCCTV);
+        return () => { active = false; };
+      }, [mobileFeedSource, activeAlert, remoteCctvFrame]);
+
+      if (loading) {
+        return (
+          <div className="flex h-screen flex-col items-center justify-center gap-4 bg-slate-950 text-cyan-400 font-mono">
+            <i className="fa-solid fa-spinner fa-spin text-4xl"></i>
+            <span className="text-xs tracking-wider">ESTABLISHING ENCRYPTED LINK...</span>
+          </div>
+        );
+      }
+
+      return (
+        <div className="min-h-screen bg-slate-950 flex flex-col font-sans select-none pb-6">
+          
+          {/* iOS-style Status Bar */}
+          <div className="bg-slate-900 border-b border-slate-850 px-4 py-2 flex justify-between items-center text-[10px] text-gray-500 font-mono">
+            <span>AEGIS-NET MASK SHIELDED</span>
+            <div className="flex items-center gap-2">
+              <i className="fa-solid fa-signal text-cyan-400"></i>
+              <span className="text-cyan-400">5G</span>
+              <i className="fa-solid fa-battery-three-quarters text-emerald-400"></i>
+              <span>94%</span>
+            </div>
+          </div>
+
+          {/* App Header */}
+          <header className="bg-slate-900 p-4 border-b border-slate-800 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-full bg-cyan-600 flex items-center justify-center">
+                <i className="fa-solid fa-user-shield text-slate-950 text-xs"></i>
+              </div>
+              <div>
+                <h1 className="title-font text-sm font-bold text-slate-200 uppercase tracking-wider">OFFICER DISPATCH</h1>
+                <p className="text-[9px] text-gray-500 font-mono">ID: SHIELD-UNIT-09</p>
+              </div>
+            </div>
+            
+            <div className="flex items-center gap-1.5">
+              <button 
+                onClick={() => {
+                  const newVal = !voiceEnabled;
+                  setVoiceEnabled(newVal);
+                  if (newVal) playMobileBeep();
+                }}
+                className={`w-7 h-7 rounded-lg border flex items-center justify-center text-xs transition-all ${
+                  voiceEnabled 
+                    ? 'bg-cyan-950/60 border-cyan-500/30 text-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.2)]' 
+                    : 'bg-slate-950 border-slate-800 text-gray-500'
+                }`}
+                title={voiceEnabled ? "Mute Voice Dispatch" : "Enable Voice Dispatch"}
+              >
+                <i className={voiceEnabled ? "fa-solid fa-volume-high" : "fa-solid fa-volume-xmark"}></i>
+              </button>
+              {pendingSyncCount > 0 && (
+                <div className="bg-amber-950/80 px-2.5 py-1 rounded-full border border-amber-500/30 text-[10px] text-amber-400 font-mono flex items-center gap-1 animate-pulse">
+                  <i className="fa-solid fa-clock-rotate-left"></i>
+                  {pendingSyncCount} PENDING
+                </div>
+              )}
+              <div className={`px-2.5 py-1 rounded-full border text-[10px] font-mono flex items-center gap-1 ${
+                isOnline ? 'bg-slate-950 border-cyan-500/20 text-cyan-400' : 'bg-rose-950/80 border-rose-500/30 text-rose-400'
+              }`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${isOnline ? 'bg-cyan-400 animate-ping' : 'bg-rose-500'}`}></span>
+                {isOnline ? 'GPS LOCKED' : 'OFFLINE'}
+              </div>
+            </div>
+          </header>
+
+          <main className="p-4 flex-1 flex flex-col gap-4">
+            
+            {/* GEOFENCE BREACH WARNING BAR */}
+            {geofenceBreach && (
+              <div className="bg-red-950/80 border border-red-500/40 text-red-400 p-3.5 rounded-2xl flex items-center justify-between text-xs font-mono danger-glow animate-pulse">
+                <div className="flex items-center gap-2">
+                  <i className="fa-solid fa-triangle-exclamation text-base"></i>
+                  <div>
+                    <span className="font-extrabold uppercase tracking-wide block">GEOFENCE BREACH DETECTED</span>
+                    <span className="text-[10px] text-gray-400">Incident is within Ahmedabad HQ restricted zone ALPHA</span>
+                  </div>
+                </div>
+                <span className="px-2 py-0.5 bg-red-900/40 text-[9px] font-bold rounded border border-red-500/30">RESTRICTED</span>
+              </div>
+            )}
+
+            {/* Bodycam System Controls */}
+            <div className="glass-card rounded-2xl p-4 border border-slate-800 flex flex-col gap-3">
+              <h3 className="text-xs uppercase text-cyan-400 tracking-wider font-bold">
+                <i className="fa-solid fa-camera mr-1.5"></i> Bodycam System Controls
+              </h3>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-[10px] text-gray-500 font-mono">SELECT CAMERA DEVICE</span>
+                  <select 
+                    value={selectedDeviceId}
+                    onChange={(e) => setSelectedDeviceId(e.target.value)}
+                    className="bg-slate-900 border border-slate-800 text-[11px] font-mono px-2 py-2 rounded-lg text-slate-200 focus:outline-none focus:border-cyan-500 w-full"
+                  >
+                    {videoDevices.length === 0 ? (
+                      <option value="">Default Camera</option>
+                    ) : (
+                      videoDevices.map(device => (
+                        <option key={device.deviceId} value={device.deviceId}>
+                          {device.label || `Camera ${device.deviceId.slice(0, 5)}`}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </div>
+                
+                <div className="flex flex-col gap-1.5 justify-end">
+                  <span className="text-[10px] text-gray-500 font-mono">HQ BROADCAST FEED</span>
+                  <button 
+                    onClick={() => setIsStreaming(!isStreaming)}
+                    className={`w-full font-bold py-2 px-3 rounded-lg text-xs font-mono transition-all border ${
+                      isStreaming 
+                        ? 'bg-rose-950/60 text-rose-450 border-rose-500/40' 
+                        : 'bg-cyan-950/40 text-cyan-400 border-cyan-500/30 hover:bg-cyan-900/40'
+                    }`}
+                  >
+                    {isStreaming ? '🔴 TRANSMITTING STREAM TO HQ' : '📡 STREAM TO COMMAND CENTER'}
+                  </button>
+                </div>
+              </div>
+            </div>
+            
+            {/* Field Suspect Biometric Identifier Panel */}
+            <div className="glass-card rounded-2xl p-4 border border-slate-800 flex flex-col gap-3 font-mono">
+              <h3 className="text-xs uppercase text-cyan-400 tracking-wider font-bold flex items-center justify-between">
+                <span><i className="fa-solid fa-fingerprint mr-1.5"></i> Field Suspect Biometric Scan</span>
+                <span className={`text-[9px] px-2 py-0.5 rounded ${modelsLoaded ? 'bg-cyan-950 text-cyan-400 border border-cyan-500/20' : 'bg-slate-900 text-gray-500'}`}>
+                  {modelsLoaded ? 'AI CORES ACTIVE' : 'LOADING AI CORES...'}
+                </span>
+              </h3>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-center">
+                <div className="flex flex-col gap-2">
+                  <span className="text-[10px] text-gray-500 uppercase">Identify Person in Field</span>
+                  <input 
+                    type="file" 
+                    id="mobile-suspect-photo" 
+                    accept="image/*" 
+                    className="hidden"
+                    onChange={identifySuspect}
+                  />
+                  <button 
+                    onClick={() => document.getElementById('mobile-suspect-photo').click()}
+                    disabled={!modelsLoaded || isScanningBiometrics}
+                    className="w-full bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-cyan-500/30 text-xs py-2.5 rounded-xl font-bold text-slate-300 transition-colors flex items-center justify-center gap-2 disabled:opacity-40"
+                  >
+                    <i className="fa-solid fa-id-card-clip text-cyan-400"></i>
+                    {isScanningBiometrics ? 'ANALYZING...' : 'UPLOAD CITIZEN PHOTO'}
+                  </button>
+                </div>
+
+                <div className="bg-slate-950/60 p-3 rounded-xl border border-slate-900 flex flex-col gap-1.5 text-[11px] text-slate-350">
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Scan Match:</span>
+                    <span className={`font-bold ${
+                      suspectMatchName.startsWith('🔴') ? 'text-red-405' : suspectMatchName.startsWith('🟢') ? 'text-emerald-450' : 'text-slate-300'
+                    }`}>{suspectMatchName}</span>
+                  </div>
+                  <div className="flex justify-between border-t border-slate-900 pt-1.5">
+                    <span className="text-gray-500">Confidence Match:</span>
+                    <span className="text-cyan-400 font-bold">{suspectConfidence}%</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Active Alert Card */}
+            {activeAlert && activeAlert.status !== 'RESOLVED' ? (
+              <div className="glass-card rounded-2xl p-4 border border-rose-500/20 danger-glow flex flex-col gap-3">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <span className="text-[9px] bg-rose-950/80 text-rose-400 border border-rose-500/30 px-2.5 py-0.5 rounded-full font-mono uppercase tracking-wider font-bold">
+                      ACTIVE DISPATCH
+                    </span>
+                    <h2 className="title-font text-lg font-extrabold text-slate-100 mt-1.5 tracking-wide">
+                      {activeAlert.alert_type}
+                    </h2>
+                    {/* Acknowledge / ETA badges */}
+                    <div className="flex items-center gap-2 mt-1.5 font-mono text-[9px] font-bold">
+                      <span className={`px-2 py-0.5 rounded ${
+                        activeAlert.status === 'ACKNOWLEDGED' 
+                          ? 'bg-purple-950 text-purple-400 border border-purple-500/20' 
+                          : 'bg-red-950 text-red-400 border border-red-500/20 animate-pulse'
+                      }`}>
+                        {activeAlert.status === 'ACKNOWLEDGED' ? 'CALL ACKNOWLEDGED' : 'AWAITING CONFIRMATION'}
+                      </span>
+                      {etaMinutes && (
+                        <span className="px-2 py-0.5 rounded bg-cyan-950 text-cyan-400 border border-cyan-500/20">
+                          ETA: {etaMinutes} MINS
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <span className="text-[10px] text-gray-400 font-mono">
+                    {new Date(activeAlert.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                  </span>
+                </div>
+
+                <div className="bg-slate-950/60 p-3 rounded-lg border border-slate-850 font-mono text-[11px] text-slate-350 flex flex-col gap-1.5">
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Threat Priority:</span>
+                    <span className="text-rose-400 font-bold">{activeAlert.threat_level}</span>
+                  </div>
+                  <div className="flex justify-between border-t border-slate-900 pt-1.5 mt-0.5">
+                    <span className="text-gray-500">Suspect/Weapon:</span>
+                    <span className="text-slate-200 font-semibold truncate max-w-[160px]">
+                      {activeAlert.payload.suspect || activeAlert.payload.weapon || "Unknown Threat"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between border-t border-slate-900 pt-1.5">
+                    <span className="text-gray-500">Coordinates:</span>
+                    <span className="text-cyan-400 font-semibold">
+                      {activeAlert.latitude.toFixed(4)}, {activeAlert.longitude.toFixed(4)}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Tactical Navigation Directions HUD */}
+                <div className="bg-slate-950/60 p-3.5 rounded-xl border border-slate-900 flex flex-col gap-2 font-mono text-[10px]">
+                  <span className="text-cyan-400 font-bold uppercase tracking-wider flex items-center gap-1.5">
+                    <i className="fa-solid fa-location-arrow"></i> Tactical Route Guidance
+                  </span>
+                  <div className="flex flex-col gap-1 text-slate-350 bg-slate-950/80 p-2.5 rounded border border-slate-900 font-sans leading-relaxed">
+                    {getNavigationSteps(userCoords, activeAlert).map((step, idx) => (
+                      <div key={idx} className={idx === 0 ? "text-cyan-400 font-mono font-bold mb-1" : "flex items-start gap-1"}>
+                        {idx > 0 && <span className="text-cyan-500 mr-1">•</span>}
+                        <span>{step}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Leaflet GPS Map Container */}
+                <div id="mobile-map" className="relative shadow-inner"></div>
+
+                {/* Segmented feed toggle */}
+                <div className="flex bg-slate-950/60 p-1 rounded-xl border border-slate-900 font-mono text-[9px] mt-1 gap-1">
+                  <button 
+                    onClick={() => setMobileFeedSource('bodycam')}
+                    className={`flex-1 py-1.5 rounded-lg text-center font-bold transition-all uppercase ${
+                      mobileFeedSource === 'bodycam' 
+                        ? 'bg-cyan-950 text-cyan-400 border border-cyan-500/20 shadow-[0_0_8px_rgba(6,182,212,0.15)]' 
+                        : 'text-gray-500 hover:text-slate-300'
+                    }`}
+                  >
+                    <i className="fa-solid fa-camera mr-1 text-[10px]"></i> Transmit Bodycam
+                  </button>
+                  <button 
+                    onClick={() => setMobileFeedSource('cctv')}
+                    className={`flex-1 py-1.5 rounded-lg text-center font-bold transition-all uppercase ${
+                      mobileFeedSource === 'cctv' 
+                        ? 'bg-cyan-950 text-cyan-400 border border-cyan-500/20 shadow-[0_0_8px_rgba(6,182,212,0.15)]' 
+                        : 'text-gray-500 hover:text-slate-300'
+                    }`}
+                  >
+                    <i className="fa-solid fa-video mr-1 text-[10px]"></i> View Incident CCTV
+                  </button>
+                </div>
+
+                {/* Live Node Stream / Bodycam */}
+                <div className="relative aspect-video rounded-xl overflow-hidden border border-slate-800 bg-slate-900 shadow-inner flex items-center justify-center">
+                  <div className="absolute top-2.5 left-2.5 bg-slate-950/80 border border-slate-800 text-[8px] text-cyan-400 px-2 py-0.5 rounded font-mono z-10 flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-ping"></span>
+                    {mobileFeedSource === 'bodycam' ? 'BODYCAM FEED (LIVE)' : 'CCTV EDGE FEED (LIVE)'}
+                  </div>
+                  
+                  {mobileFeedSource === 'bodycam' ? (
+                    <React.Fragment>
+                      <video 
+                        ref={videoRef}
+                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                        className={cameraStream ? '' : 'hidden'}
+                        autoPlay
+                        muted
+                        playsInline
+                      />
+                      {!cameraStream && (
+                        <div className="flex flex-col items-center gap-1.5 text-slate-500 font-mono text-center px-4">
+                          <i className="fa-solid fa-camera-rotate text-2xl text-slate-700"></i>
+                          <span className="text-[10px] uppercase font-bold text-slate-400">
+                            {cameraError ? "BODYCAM STREAM OFFLINE" : "INITIALIZING BODYCAM..."}
+                          </span>
+                          <span className="text-[8px] text-gray-500">
+                            {cameraError 
+                              ? "Camera hardware error or permission denied." 
+                              : "Please grant camera access to stream live field feed."}
+                          </span>
+                        </div>
+                      )}
+                    </React.Fragment>
+                  ) : (
+                    <React.Fragment>
+                      <canvas 
+                        ref={cctvCanvasRef}
+                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                      />
+                      <img 
+                        ref={cctvImgRef}
+                        src={remoteCctvFrame || ''} 
+                        className="hidden" 
+                        alt="cctv temp"
+                      />
+                    </React.Fragment>
+                  )}
+                </div>
+
+                {/* Tactical Dispatch Notes Panel */}
+                <div className="flex flex-col gap-2 mt-1 bg-slate-950/80 p-3 rounded-xl border border-slate-900 font-mono">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] text-cyan-400 font-bold tracking-wider uppercase"><i className="fa-solid fa-pen-to-square mr-1"></i> Resolution Logging</span>
+                    <button 
+                      onClick={startVoiceDictation}
+                      className={`text-[9px] font-bold py-1 px-2.5 rounded-lg flex items-center gap-1 transition-all ${
+                        isDictating 
+                          ? 'bg-red-600 text-white animate-pulse' 
+                          : 'bg-slate-900 border border-slate-800 text-gray-400 hover:text-white hover:border-cyan-500/50'
+                      }`}
+                    >
+                      <i className="fa-solid fa-microphone"></i>
+                      {isDictating ? 'LISTENING...' : 'DICTATE'}
+                    </button>
+                  </div>
+                  <textarea 
+                    value={resolutionNotes}
+                    onChange={(e) => setResolutionNotes(e.target.value)}
+                    placeholder="Enter incident resolution notes or dictate using voice..."
+                    rows="2"
+                    className="w-full bg-slate-900/50 border border-slate-850 text-xs px-2.5 py-2 rounded-lg text-slate-300 focus:outline-none focus:border-cyan-500 resize-none font-sans"
+                  />
+                </div>
+
+                {/* Dispatch Status Actions */}
+                <div className="flex gap-2.5">
+                  <button 
+                    onClick={acknowledgeDispatch}
+                    disabled={activeAlert.status === 'ACKNOWLEDGED'}
+                    className={`flex-1 font-bold py-2.5 rounded-xl text-[10px] uppercase font-mono border transition-all ${
+                      activeAlert.status === 'ACKNOWLEDGED'
+                        ? 'bg-slate-950 border-slate-900 text-gray-600'
+                        : 'bg-purple-950/40 text-purple-400 border-purple-500/30 hover:bg-purple-900/20'
+                    }`}
+                  >
+                    <i className="fa-solid fa-clipboard-check mr-1.5"></i> ACKNOWLEDGE
+                  </button>
+                  <button 
+                    onClick={reportETA}
+                    disabled={etaMinutes !== null}
+                    className={`flex-1 font-bold py-2.5 rounded-xl text-[10px] uppercase font-mono border transition-all ${
+                      etaMinutes !== null
+                        ? 'bg-slate-950 border-slate-900 text-gray-600'
+                        : 'bg-cyan-950/40 text-cyan-400 border-cyan-500/30 hover:bg-cyan-900/20'
+                    }`}
+                  >
+                    <i className="fa-solid fa-route mr-1.5"></i> REPORT ETA
+                  </button>
+                </div>
+
+                {/* Dispatch Unit Actions */}
+                <div className="flex gap-3 border-t border-slate-900/60 pt-3 mt-1">
+                  <button 
+                    onClick={resolveActiveDispatch}
+                    className="flex-1 bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-slate-950 font-extrabold py-3 px-4 rounded-xl text-xs uppercase tracking-wider transition-colors shadow-lg shadow-emerald-600/10"
+                  >
+                    RESOLVE DISPATCH
+                  </button>
+                  <button 
+                    onClick={() => alert(`Navigating to coordinates: ${activeAlert.latitude}, ${activeAlert.longitude}`)}
+                    className="bg-slate-800 hover:bg-slate-700 text-cyan-400 font-bold px-4 py-3 rounded-xl text-xs transition-colors border border-cyan-500/20"
+                  >
+                    <i className="fa-solid fa-diamond-turn-right text-sm"></i>
+                  </button>
+                </div>
+
+              </div>
+            ) : (
+              <div className="glass-card rounded-2xl p-6 border border-slate-800 flex flex-col items-center justify-center text-center gap-3 py-16">
+                <div className="w-14 h-14 rounded-full bg-slate-900 flex items-center justify-center border border-slate-800">
+                  <i className="fa-solid fa-bell-slash text-2xl text-slate-600"></i>
+                </div>
+                <div className="font-mono">
+                  <h3 className="text-sm font-bold text-slate-300">No Dispatched Events</h3>
+                  <p className="text-[10px] text-gray-500 mt-1 max-w-[220px]">
+                    Waiting for Central Dispatch Grid to select a threat card and click "DISPATCH UNIT".
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Event History Logs */}
+            <div className="glass-card rounded-2xl p-4 border border-slate-800 flex flex-col gap-3 font-mono flex-1 min-h-[180px]">
+              <h3 className="text-xs uppercase text-cyan-400 tracking-wider font-bold"><i className="fa-solid fa-clock-rotate-left mr-1.5"></i> Call History</h3>
+              
+              <div className="flex flex-col gap-2 overflow-y-auto max-h-[220px] pr-1">
+                {history.length === 0 ? (
+                  <div className="text-[10px] text-gray-600 italic">No historical logs.</div>
+                ) : (
+                  history.map((h, i) => (
+                    <div key={i} className="flex justify-between items-center bg-slate-900/40 p-2.5 rounded-xl border border-slate-900 text-[10px]">
+                      <div className="flex flex-col gap-0.5">
+                        <span className={`font-bold ${h.status === 'RESOLVED' ? 'text-gray-400 line-through' : 'text-slate-200'}`}>
+                          {h.alert_type}
+                        </span>
+                        <span className="text-[9px] text-gray-500">
+                          {new Date(h.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                        </span>
+                      </div>
+                      <span className={`font-bold px-2 py-0.5 rounded border ${
+                        h.status === 'RESOLVED' 
+                          ? 'text-emerald-400 bg-emerald-950/20 border-emerald-500/20' 
+                          : h.status === 'DISPATCHED'
+                            ? 'text-cyan-400 bg-cyan-950/20 border-cyan-500/20 animate-pulse'
+                            : 'text-rose-400 bg-rose-950/20 border-rose-500/20'
+                      }`}>
+                        {h.status}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+          </main>
+        </div>
+      );
+    }
+
+    const container = document.getElementById('app-root');
+    const root = ReactDOM.createRoot(container);
+    root.render(<OfficerMobileApp />);
+  </script>
+</body>
+</html>

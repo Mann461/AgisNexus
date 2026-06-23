@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aegis Simulator — Edge Node Control Panel</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- FontAwesome & Google Fonts -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Share+Tech+Mono&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- React & Babel -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone@7.26.10/babel.min.js"></script>
+
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      background: radial-gradient(ellipse at top left, #0c1628, #020617);
+      min-height: 100vh;
+      color: #f3f4f6;
+      overflow-x: hidden;
+    }
+    h1, h2, h3, .title-font {
+      font-family: 'Outfit', sans-serif;
+    }
+    .mono-font {
+      font-family: 'Share Tech Mono', monospace;
+    }
+    .glass-panel {
+      background: rgba(15, 23, 42, 0.7);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(0, 242, 254, 0.12);
+      box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+    }
+    .glass-card {
+      background: rgba(31, 41, 55, 0.45);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    @keyframes pulse-glow {
+      0%, 100% { box-shadow: 0 0 8px rgba(0, 242, 254, 0.3); }
+      50% { box-shadow: 0 0 25px rgba(0, 242, 254, 0.6); }
+    }
+    .pulse-glow {
+      animation: pulse-glow 2s infinite ease-in-out;
+    }
+    @keyframes flash-red {
+      0%, 100% { background-color: rgba(239, 68, 68, 0.15); }
+      50% { background-color: rgba(239, 68, 68, 0.35); }
+    }
+    .flash-red {
+      animation: flash-red 0.8s ease-in-out 3;
+    }
+    input[type="range"] {
+      -webkit-appearance: none;
+      width: 100%;
+      height: 8px;
+      border-radius: 4px;
+      background: linear-gradient(to right, #ef4444, #f59e0b, #10b981);
+      outline: none;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #00f2fe;
+      cursor: pointer;
+      box-shadow: 0 0 8px rgba(0, 242, 254, 0.5);
+    }
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: rgba(15, 23, 42, 0.1); }
+    ::-webkit-scrollbar-thumb { background: rgba(0, 242, 254, 0.3); border-radius: 4px; }
+  </style>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: { 400: '#38bdf8', 500: '#0ea5e9', 600: '#0284c7' }
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body class="p-4 md:p-6">
+
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="react" data-preset-options='{"react": {"runtime": "classic"}}'>
+    const { useState, useEffect, useRef } = React;
+
+    const ALERT_PRESETS = [
+      {
+        type: "WEAPON",
+        threat: "CRITICAL",
+        icon: "fa-gun",
+        color: "text-red-400",
+        bgColor: "bg-red-950/40",
+        borderColor: "border-red-500/40",
+        details: { weapon: "Concealed Handgun", confidence: 0.96, source: "Simulator Edge Node" }
+      },
+      {
+        type: "VIOLENCE",
+        threat: "HIGH",
+        icon: "fa-hand-fist",
+        color: "text-orange-400",
+        bgColor: "bg-orange-950/40",
+        borderColor: "border-orange-500/40",
+        details: { type: "Physical altercation detected", participants: 3, confidence: 0.91 }
+      },
+      {
+        type: "CRIMINAL_MATCH",
+        threat: "CRITICAL",
+        icon: "fa-user-secret",
+        color: "text-rose-400",
+        bgColor: "bg-rose-950/40",
+        borderColor: "border-rose-500/40",
+        details: { suspect: "Wanted Fugitive ID-9981", criminal_id: "CRIM-9981", similarity: 0.93 }
+      },
+      {
+        type: "LPR",
+        threat: "MEDIUM",
+        icon: "fa-car",
+        color: "text-yellow-400",
+        bgColor: "bg-yellow-950/40",
+        borderColor: "border-yellow-500/40",
+        details: { plate: "KA-51-MD-2026", match_flag: true, owner: "Registered Stolen Vehicle (Bullet 350)" }
+      },
+      {
+        type: "GEOFENCE_BREACH",
+        threat: "MEDIUM",
+        icon: "fa-map-location-dot",
+        color: "text-amber-400",
+        bgColor: "bg-amber-950/40",
+        borderColor: "border-amber-500/40",
+        details: { zone: "Restricted Power Substation Zone C4", duration_seconds: 22 }
+      },
+      {
+        type: "MISSING_PERSON",
+        threat: "HIGH",
+        icon: "fa-person-circle-question",
+        color: "text-purple-400",
+        bgColor: "bg-purple-950/40",
+        borderColor: "border-purple-500/40",
+        details: { name: "Priya Sharma (Age 12)", last_seen: "Bus Stop, MG Road", similarity: 0.87 }
+      }
+    ];
+
+    function App() {
+      const [connected, setConnected] = useState(false);
+      const [logs, setLogs] = useState([]);
+      const [batteryLevel, setBatteryLevel] = useState(85);
+      const [triggeredCount, setTriggeredCount] = useState(0);
+      const [lastTrigger, setLastTrigger] = useState(null);
+      const [isSending, setIsSending] = useState(null); // index of sending preset
+      const [customType, setCustomType] = useState('');
+      const [customThreat, setCustomThreat] = useState('HIGH');
+      const [autoMode, setAutoMode] = useState(false);
+      const autoIntervalRef = useRef(null);
+
+      const API_BASE = '/api/v1';
+
+      const addLog = (msg, type = 'normal') => {
+        const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+        setLogs(prev => [{ time, msg, type }, ...prev.slice(0, 19)]);
+      };
+
+      // Check backend connectivity
+      useEffect(() => {
+        const checkConnection = async () => {
+          try {
+            const resp = await fetch(`${API_BASE}/nodes`);
+            if (resp.ok) {
+              setConnected(true);
+              addLog('Backend connection established', 'normal');
+            }
+          } catch (e) {
+            setConnected(false);
+            addLog('Backend offline — alerts will fail', 'alert');
+          }
+        };
+        checkConnection();
+        const interval = setInterval(checkConnection, 10000);
+        return () => clearInterval(interval);
+      }, []);
+
+      // Auto-mode: trigger random alerts periodically
+      useEffect(() => {
+        if (autoMode) {
+          addLog('AUTO-TRIGGER MODE ENABLED — random alerts every 8-15s', 'alert');
+          autoIntervalRef.current = setInterval(() => {
+            const randomPreset = ALERT_PRESETS[Math.floor(Math.random() * ALERT_PRESETS.length)];
+            triggerAlert(randomPreset.type, randomPreset.threat, randomPreset.details, ALERT_PRESETS.indexOf(randomPreset));
+          }, Math.random() * 7000 + 8000);
+        } else {
+          if (autoIntervalRef.current) {
+            clearInterval(autoIntervalRef.current);
+            autoIntervalRef.current = null;
+          }
+        }
+        return () => {
+          if (autoIntervalRef.current) clearInterval(autoIntervalRef.current);
+        };
+      }, [autoMode]);
+
+      const triggerAlert = async (type, threat, details, idx) => {
+        setIsSending(idx);
+        try {
+          const resp = await fetch(`${API_BASE}/simulator/trigger`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              alert_type: type,
+              threat_level: threat,
+              details: details
+            })
+          });
+          
+          if (resp.ok) {
+            const data = await resp.json();
+            setTriggeredCount(prev => prev + 1);
+            setLastTrigger({ type, threat, time: new Date().toLocaleTimeString() });
+            addLog(`✅ Alert triggered: ${type} [${threat}] — ID: ${data.id?.slice(0, 8)}`, 'normal');
+            
+            if (threat === 'CRITICAL') {
+              addLog(`🚨 Emergency notifications dispatched for CRITICAL alert`, 'alert');
+            }
+          } else {
+            const errText = await resp.text();
+            addLog(`❌ Alert trigger failed: ${errText}`, 'alert');
+          }
+        } catch (err) {
+          addLog(`❌ Connection error: ${err.message}`, 'alert');
+        } finally {
+          setIsSending(null);
+        }
+      };
+
+      const sendTelemetry = async () => {
+        addLog(`📡 Simulating telemetry packet (SoC: ${batteryLevel}%)`, 'normal');
+        // Telemetry requires a registered node with crypto keys — just log it for demo
+        addLog(`⚡ Panel: ${(Math.random() * 6 + 15).toFixed(1)}V | Load: ${(Math.random() * 1.5 + 1.5).toFixed(1)}A | Temp: ${(Math.random() * 15 + 35).toFixed(1)}°C`, 'normal');
+      };
+
+      return (
+        <div className="max-w-[1200px] mx-auto flex flex-col gap-6">
+          
+          {/* HEADER */}
+          <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-cyan-500/10 pb-5">
+            <div>
+              <div className="flex items-center gap-3">
+                <div className="relative w-9 h-9 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center pulse-glow">
+                  <i className="fa-solid fa-microchip text-slate-950 text-sm"></i>
+                </div>
+                <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-cyan-300 via-blue-400 to-purple-400">
+                  Edge Node Simulator
+                </h1>
+              </div>
+              <p className="text-gray-500 text-xs mt-1 ml-12 mono-font">AEGIS PLATFORM — INTERACTIVE INCIDENT GENERATOR</p>
+            </div>
+            
+            <div className="flex items-center gap-3">
+              <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold glass-panel ${
+                connected ? 'text-emerald-400 border-emerald-500/20' : 'text-rose-400 border-rose-500/20'
+              }`}>
+                <span className={`w-2.5 h-2.5 rounded-full ${connected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`}></span>
+                {connected ? 'BACKEND LINKED' : 'OFFLINE'}
+              </div>
+              <div className="glass-panel px-3 py-1.5 rounded-lg text-xs text-gray-400 mono-font">
+                TRIGGERED: <span className="text-cyan-400 font-bold">{triggeredCount}</span>
+              </div>
+            </div>
+          </header>
+
+          {/* MAIN GRID */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            
+            {/* LEFT: ALERT TRIGGER BUTTONS */}
+            <div className="lg:col-span-7 flex flex-col gap-4">
+              <div className="glass-panel rounded-2xl p-5">
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-lg font-bold text-slate-200 flex items-center gap-2">
+                    <i className="fa-solid fa-bolt text-cyan-400"></i>
+                    Incident Trigger Panel
+                  </h2>
+                  <button
+                    onClick={() => setAutoMode(!autoMode)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-all ${
+                      autoMode
+                        ? 'bg-red-600 text-white border-red-500 animate-pulse'
+                        : 'bg-slate-800 text-gray-400 border-slate-700 hover:border-cyan-500/50 hover:text-cyan-400'
+                    }`}
+                  >
+                    {autoMode ? '🔴 AUTO MODE ON' : '⚡ AUTO MODE'}
+                  </button>
+                </div>
+                
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {ALERT_PRESETS.map((preset, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => triggerAlert(preset.type, preset.threat, preset.details, idx)}
+                      disabled={isSending === idx}
+                      className={`${preset.bgColor} ${preset.borderColor} border rounded-xl p-4 flex items-start gap-3 text-left transition-all hover:scale-[1.02] hover:shadow-lg disabled:opacity-50 disabled:cursor-wait group ${
+                        lastTrigger && lastTrigger.type === preset.type ? 'flash-red' : ''
+                      }`}
+                    >
+                      <div className={`w-10 h-10 rounded-lg ${preset.bgColor} flex items-center justify-center ${preset.color} text-lg flex-shrink-0 group-hover:scale-110 transition-transform`}>
+                        <i className={`fa-solid ${preset.icon}`}></i>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-sm font-bold text-slate-200">{preset.type.replace('_', ' ')}</span>
+                          <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full border ${
+                            preset.threat === 'CRITICAL' ? 'bg-red-950/80 text-red-400 border-red-500/30' : 
+                            preset.threat === 'HIGH' ? 'bg-orange-950/80 text-orange-400 border-orange-500/30' :
+                            'bg-yellow-950/80 text-yellow-400 border-yellow-500/30'
+                          }`}>
+                            {preset.threat}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-gray-500 mt-1 truncate mono-font">
+                          {JSON.stringify(preset.details).slice(0, 60)}...
+                        </p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+
+                {/* Custom Alert Trigger */}
+                <div className="mt-4 pt-4 border-t border-slate-800">
+                  <h3 className="text-xs uppercase text-gray-500 font-bold tracking-wider mb-3">
+                    <i className="fa-solid fa-plus-circle mr-1"></i> Custom Alert
+                  </h3>
+                  <div className="flex flex-wrap gap-2">
+                    <input
+                      type="text"
+                      value={customType}
+                      onChange={(e) => setCustomType(e.target.value)}
+                      placeholder="Alert type (e.g. FIRE)"
+                      className="flex-1 min-w-[160px] bg-slate-900 border border-slate-800 text-xs px-3 py-2 rounded-lg text-slate-200 focus:outline-none focus:border-cyan-500 mono-font"
+                    />
+                    <select
+                      value={customThreat}
+                      onChange={(e) => setCustomThreat(e.target.value)}
+                      className="bg-slate-900 border border-slate-800 text-xs px-3 py-2 rounded-lg text-slate-200 focus:outline-none focus:border-cyan-500 mono-font"
+                    >
+                      <option value="CRITICAL">CRITICAL</option>
+                      <option value="HIGH">HIGH</option>
+                      <option value="MEDIUM">MEDIUM</option>
+                      <option value="LOW">LOW</option>
+                    </select>
+                    <button
+                      onClick={() => {
+                        if (!customType.trim()) return;
+                        triggerAlert(customType.toUpperCase(), customThreat, { source: "Custom Simulator Input" }, -1);
+                        setCustomType('');
+                      }}
+                      className="bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold text-xs px-4 py-2 rounded-lg transition-colors"
+                    >
+                      TRIGGER
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* SOLAR BATTERY SIMULATOR */}
+              <div className="glass-panel rounded-2xl p-5">
+                <h2 className="text-lg font-bold text-slate-200 flex items-center gap-2 mb-4">
+                  <i className="fa-solid fa-solar-panel text-emerald-400"></i>
+                  Solar Power Simulator
+                </h2>
+                <div className="flex flex-col gap-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-gray-400 mono-font">STATE OF CHARGE</span>
+                    <span className={`text-2xl font-extrabold mono-font ${
+                      batteryLevel > 60 ? 'text-emerald-400' : batteryLevel > 30 ? 'text-yellow-400' : 'text-red-400'
+                    }`}>
+                      {batteryLevel}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={batteryLevel}
+                    onChange={(e) => setBatteryLevel(parseInt(e.target.value))}
+                  />
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="glass-card rounded-lg p-3 text-center">
+                      <span className="text-[10px] text-gray-500 block uppercase">Panel V</span>
+                      <span className="text-sm font-bold text-emerald-400 mono-font">{batteryLevel > 50 ? '18.4V' : '12.1V'}</span>
+                    </div>
+                    <div className="glass-card rounded-lg p-3 text-center">
+                      <span className="text-[10px] text-gray-500 block uppercase">Load A</span>
+                      <span className="text-sm font-bold text-cyan-400 mono-font">2.4A</span>
+                    </div>
+                    <div className="glass-card rounded-lg p-3 text-center">
+                      <span className="text-[10px] text-gray-500 block uppercase">Temp</span>
+                      <span className="text-sm font-bold text-yellow-400 mono-font">38.5°C</span>
+                    </div>
+                  </div>
+                  <button
+                    onClick={sendTelemetry}
+                    className="bg-emerald-600/20 border border-emerald-500/30 text-emerald-400 font-bold text-xs py-2.5 rounded-lg hover:bg-emerald-600/30 transition-colors"
+                  >
+                    <i className="fa-solid fa-satellite-dish mr-1.5"></i> SEND TELEMETRY PACKET
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* RIGHT: LIVE LOG + LAST TRIGGER */}
+            <div className="lg:col-span-5 flex flex-col gap-4">
+              
+              {/* Last Triggered Alert Card */}
+              {lastTrigger && (
+                <div className="glass-panel rounded-2xl p-4 border border-cyan-500/20">
+                  <h3 className="text-xs uppercase text-cyan-400 tracking-wider font-bold mb-3">
+                    <i className="fa-solid fa-check-circle mr-1"></i> Last Triggered
+                  </h3>
+                  <div className="flex items-center gap-3">
+                    <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-cyan-600/30 to-blue-600/30 flex items-center justify-center text-cyan-400 text-xl">
+                      <i className="fa-solid fa-bolt"></i>
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold text-slate-200">{lastTrigger.type}</p>
+                      <p className="text-[10px] text-gray-500 mono-font">{lastTrigger.threat} • {lastTrigger.time}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* System Event Log */}
+              <div className="glass-panel rounded-2xl p-4 flex flex-col gap-2 flex-1">
+                <div className="flex justify-between items-center mb-2">
+                  <h3 className="text-sm font-bold text-slate-300 flex items-center gap-2">
+                    <i className="fa-solid fa-terminal text-cyan-400"></i>
+                    Event Log
+                  </h3>
+                  <button
+                    onClick={() => setLogs([])}
+                    className="text-[10px] text-gray-500 hover:text-gray-300 transition-colors"
+                  >
+                    CLEAR
+                  </button>
+                </div>
+                <div className="flex flex-col gap-1.5 max-h-[500px] overflow-y-auto pr-1">
+                  {logs.length === 0 ? (
+                    <div className="text-[10px] text-gray-600 italic mono-font py-4 text-center">
+                      No events yet. Trigger an alert to begin.
+                    </div>
+                  ) : (
+                    logs.map((log, i) => (
+                      <div key={i} className={`flex gap-2 items-start px-2.5 py-1.5 rounded-lg text-[11px] mono-font ${
+                        log.type === 'alert' ? 'bg-red-950/20 text-red-400 border border-red-500/10' : 'bg-slate-900/40 text-slate-400'
+                      }`}>
+                        <span className="text-gray-600 flex-shrink-0">[{log.time}]</span>
+                        <span className="break-all">{log.msg}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {/* Quick Links */}
+              <div className="glass-panel rounded-2xl p-4">
+                <h3 className="text-xs uppercase text-gray-500 font-bold tracking-wider mb-3">Quick Links</h3>
+                <div className="flex flex-col gap-2">
+                  <a href="/static/index.html" target="_blank" className="flex items-center gap-2 text-xs text-cyan-400 hover:text-cyan-300 transition-colors bg-slate-900/40 px-3 py-2 rounded-lg">
+                    <i className="fa-solid fa-shield-halved"></i> Command Center Dashboard
+                  </a>
+                  <a href="/static/mobile.html" target="_blank" className="flex items-center gap-2 text-xs text-cyan-400 hover:text-cyan-300 transition-colors bg-slate-900/40 px-3 py-2 rounded-lg">
+                    <i className="fa-solid fa-mobile-screen-button"></i> Officer Mobile Dispatch
+                  </a>
+                  <a href="/docs" target="_blank" className="flex items-center gap-2 text-xs text-cyan-400 hover:text-cyan-300 transition-colors bg-slate-900/40 px-3 py-2 rounded-lg">
+                    <i className="fa-solid fa-book"></i> API Documentation (Swagger)
+                  </a>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      );
+    }
+
+    const container = document.getElementById('root');
+    const root = ReactDOM.createRoot(container);
+    root.render(<App />);
+  </script>
+</body>
+</html>

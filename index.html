@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aegis | Solar AI Surveillance Platform</title>
+    <meta name="description" content="Next-Gen Solar Powered AI CCTV Surveillance System with Face Detection and Recognition.">
+    <link rel="stylesheet" href="styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- AI Models -->
+    <script src="face-api.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+</head>
+<body>
+    <div class="cyber-grid-bg"></div>
+    <div class="hud-overlay"></div>
+
+    <header class="top-nav">
+        <div class="logo-container">
+            <i class="fa-solid fa-shield-halved neon-blue glow-pulse"></i>
+            <h1 class="logo-text">AEGIS <span class="neon-purple">NEXUS</span></h1>
+        </div>
+        <div class="status-bar">
+            <div class="status-item"><i class="fa-solid fa-satellite-dish neon-blue"></i> UPLINK: <span class="text-green">SECURE</span></div>
+            <div class="status-item"><i class="fa-brands fa-raspberry-pi text-red"></i> EDGE NODES: 24/24 ONLINE</div>
+            <div class="status-item"><i class="fa-solid fa-cloud text-blue"></i> CLOUD DB: SYNCED</div>
+            <div class="time-display" id="clock">00:00:00</div>
+        </div>
+    </header>
+
+    <main class="dashboard-container">
+        <!-- Main Surveillance Feed -->
+        <section class="panel cctv-main-panel glass-panel">
+            <div class="panel-header">
+                <h2><i class="fa-solid fa-video neon-blue"></i> LIVE AI SURVEILLANCE FEED</h2>
+                <div class="feed-controls">
+                    <span class="badge red-badge blink">LIVE REC</span>
+                    <button class="cyber-btn active" data-cam="1">CAM-01 LOBBY</button>
+                </div>
+            </div>
+            <div class="cctv-viewer">
+                <video autoplay playsinline muted class="cctv-feed-img" id="main-cam-video" style="display: none;"></video>
+                <img src="assets/feed1.png" alt="Live Feed" class="cctv-feed-img" id="main-cam-img">
+                <div class="cctv-overlay">
+                    <div class="scanning-line"></div>
+                    <div class="grid-lines"></div>
+                    <div class="timestamp-overlay" id="cam-timestamp">2026-05-19 13:22:04 CAM-01</div>
+                    <div id="dynamic-boxes"></div>
+                </div>
+            </div>
+            
+            <div class="feed-stats-bar">
+                <div class="stat"><i class="fa-solid fa-person-walking neon-green"></i> MOTION TRACKING: ACTIVE</div>
+                <div class="stat"><i class="fa-solid fa-brain neon-purple"></i> AI ANALYSIS: <span id="ai-status" class="blink text-yellow">LOADING MODELS...</span></div>
+                <div class="stat" id="weapon-stat"><i class="fa-solid fa-gun text-red"></i> WEAPON DETECT: ON</div>
+                <div class="stat"><i class="fa-solid fa-car neon-blue"></i> ANPR: STBY</div>
+            </div>
+        </section>
+
+        <div class="side-panels">
+            <!-- Face Recognition Panel -->
+            <section class="panel face-rec-panel glass-panel">
+                <div class="panel-header">
+                    <h2><i class="fa-solid fa-face-viewfinder neon-purple"></i> BIOMETRIC MATCHING</h2>
+                </div>
+                <div class="face-rec-content">
+                    <div class="scan-target">
+                        <div class="target-placeholder">
+                            <i class="fa-regular fa-face-smile"></i>
+                            <div class="scan-mesh"></div>
+                        </div>
+                    </div>
+                    <div class="match-details">
+                        <div class="data-row"><span>STATUS:</span> <span class="neon-blue" id="match-status">WAITING...</span></div>
+                        <div class="data-row"><span>CONFIDENCE:</span> <div class="progress-bar"><div class="fill neon-purple-bg" style="width: 0%" id="conf-bar"></div></div> <span id="conf-val">0%</span></div>
+                        <div class="data-row"><span>DB QUERY:</span> <span class="text-green">LOCAL NODE + CLOUD</span></div>
+                    </div>
+                    
+                    <div class="enroll-section" style="margin-top: 10px; border-top: 1px dashed rgba(255,255,255,0.2); padding-top: 15px;">
+                        <input type="text" id="enroll-name" placeholder="ENTER NEW IDENTITY..." class="cyber-input">
+                        <button id="enroll-btn" class="cyber-btn" style="width: 100%; margin-top: 5px;">SCAN WEBCAM & ENROLL</button>
+                        
+                        <div style="text-align: center; margin: 10px 0; color: #00ffff; font-size: 12px; opacity: 0.7;">-- OR --</div>
+                        
+                        <input type="file" id="enroll-image" accept="image/*" style="display: none;">
+                        <button id="upload-btn" class="cyber-btn" style="width: 100%;" onclick="document.getElementById('enroll-image').click()"><i class="fa-solid fa-upload"></i> UPLOAD PHOTO</button>
+                    </div>
+
+                    <div class="recent-scans" style="margin-top: 15px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(0, 255, 255, 0.3); padding-bottom: 5px; margin-bottom: 10px;">
+                            <h3 style="margin: 0; color: #fff;">RECENT LOGS</h3>
+                            <button id="export-logs-btn" class="cyber-btn" style="padding: 3px 8px; font-size: 10px; width: auto; min-width: 0;"><i class="fa-solid fa-file-pdf"></i> EXPORT PDF</button>
+                        </div>
+                        <ul class="log-list" id="scan-logs">
+                            <!-- Logs injected here -->
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Solar Power Dashboard -->
+            <section class="panel solar-panel glass-panel">
+                <div class="panel-header">
+                    <h2><i class="fa-solid fa-solar-panel text-green"></i> RENEWABLE ENERGY HUB</h2>
+                </div>
+                <div class="solar-content">
+                    <div class="power-stats">
+                        <div class="circle-chart">
+                            <svg viewBox="0 0 36 36" class="circular-chart green">
+                              <path class="circle-bg"
+                                d="M18 2.0845
+                                  a 15.9155 15.9155 0 0 1 0 31.831
+                                  a 15.9155 15.9155 0 0 1 0 -31.831"
+                              />
+                              <path class="circle" id="batt-circle"
+                                stroke-dasharray="85, 100"
+                                d="M18 2.0845
+                                  a 15.9155 15.9155 0 0 1 0 31.831
+                                  a 15.9155 15.9155 0 0 1 0 -31.831"
+                              />
+                              <text x="18" y="20.35" class="percentage" id="batt-text">85%</text>
+                            </svg>
+                            <div class="chart-label">BATTERY</div>
+                        </div>
+                        <div class="energy-metrics">
+                            <div class="metric"><i class="fa-solid fa-sun text-yellow"></i> INPUT: <span class="text-green">450W</span></div>
+                            <div class="metric"><i class="fa-solid fa-bolt neon-blue"></i> DRAW: <span class="text-red">120W</span></div>
+                            <div class="metric"><i class="fa-solid fa-battery-three-quarters text-green"></i> STATUS: <span class="text-green blink">CHARGING</span></div>
+                        </div>
+                    </div>
+                    <div class="architecture-flow">
+                        <div class="flow-node"><i class="fa-solid fa-solar-panel"></i></div>
+                        <div class="flow-arrow"><i class="fa-solid fa-arrow-right flow-anim"></i></div>
+                        <div class="flow-node"><i class="fa-solid fa-car-battery"></i></div>
+                        <div class="flow-arrow"><i class="fa-solid fa-arrow-right flow-anim"></i></div>
+                        <div class="flow-node"><i class="fa-brands fa-raspberry-pi"></i></div>
+                    </div>
+                </div>
+            </section>
+        </div>
+        
+        <!-- Bottom Row -->
+        <section class="panel system-arch-panel glass-panel">
+            <div class="panel-header">
+                <h2><i class="fa-solid fa-network-wired neon-blue"></i> SYSTEM ARCHITECTURE & IOT TELEMETRY</h2>
+            </div>
+            <div class="arch-content">
+                <div class="diagram-container">
+                     <div class="node box" data-info="Solar Array (1000W)">
+                         <i class="fa-solid fa-solar-panel"></i><br>Solar
+                     </div>
+                     <div class="connector line-h"></div>
+                     <div class="node box" data-info="LiFePO4 12V 100Ah">
+                         <i class="fa-solid fa-battery-full"></i><br>Battery
+                     </div>
+                     <div class="connector line-h"></div>
+                     <div class="node box highlight-node" data-info="Raspberry Pi 5 Edge AI">
+                         <i class="fa-brands fa-raspberry-pi"></i><br>Edge Node
+                     </div>
+                     <div class="connector line-h"></div>
+                     <div class="node box ai-node" data-info="Neural Engine processing Vision">
+                         <i class="fa-solid fa-brain"></i><br>AI Core
+                     </div>
+                     <div class="connector line-h"></div>
+                     <div class="node box cloud-node" data-info="AWS/GCP Cloud Database">
+                         <i class="fa-solid fa-cloud"></i><br>Cloud
+                     </div>
+                </div>
+                
+                <div class="security-alerts">
+                    <h3><i class="fa-solid fa-bell"></i> THREAT INTELLIGENCE</h3>
+                    <div class="alert-box">
+                        <div class="alert-item warning">
+                            <span class="time">[13:10:05]</span> <span class="msg">Unusual movement detected (Heatmap: Sector 7)</span>
+                        </div>
+                        <div class="alert-item critical blink">
+                            <span class="time">[13:15:22]</span> <span class="msg">UNKNOWN FACE DETECTED AT GATE - TRIGGERING ALARM</span>
+                        </div>
+                        <div class="alert-item normal">
+                            <span class="time">[13:20:00]</span> <span class="msg">Routine system diagnostic completed.</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <script src="script.js"></script>
+</body>
+</html>

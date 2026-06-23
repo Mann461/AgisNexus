@@ -1,0 +1,103 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SolarShieldEdgeTelemetry",
+  "description": "Schema for telemetry messages received from SolarShield AI edge nodes containing system health and solar charge metrics.",
+  "type": "object",
+  "properties": {
+    "node_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier of the edge node reporting metrics"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of when the telemetry was recorded"
+    },
+    "solar_metrics": {
+      "type": "object",
+      "properties": {
+        "panel_voltage_v": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Solar panel voltage in Volts"
+        },
+        "battery_voltage_v": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Battery terminal voltage in Volts"
+        },
+        "charge_current_a": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Charge current flowing into battery in Amperes"
+        },
+        "load_current_a": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Load current drawn by edge hardware in Amperes"
+        },
+        "battery_temp_c": {
+          "type": "number",
+          "description": "Battery temperature in Celsius"
+        },
+        "state_of_charge_percent": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Estimated State of Charge percentage (SoC)"
+        }
+      },
+      "required": ["panel_voltage_v", "battery_voltage_v", "charge_current_a", "load_current_a", "state_of_charge_percent"]
+    },
+    "system_metrics": {
+      "type": "object",
+      "properties": {
+        "cpu_usage_percent": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Edge CPU usage percent"
+        },
+        "gpu_usage_percent": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Edge GPU usage percent (e.g. Jetson CUDA cores)"
+        },
+        "ram_usage_mb": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Active RAM consumption in Megabytes"
+        },
+        "disk_usage_percent": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Local NVMe storage utilization"
+        },
+        "temperature_c": {
+          "type": "number",
+          "description": "Core CPU/GPU SoC temperature in Celsius"
+        }
+      },
+      "required": ["cpu_usage_percent", "ram_usage_mb", "disk_usage_percent", "temperature_c"]
+    },
+    "network": {
+      "type": "object",
+      "properties": {
+        "signal_strength_dbm": {
+          "type": "integer",
+          "description": "Network RSSI signal strength"
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["WIFI", "ETHERNET", "GSM", "MESH_LORA"],
+          "description": "Current primary transmission interface"
+        }
+      },
+      "required": ["mode"]
+    }
+  },
+  "required": ["node_id", "timestamp", "solar_metrics", "system_metrics", "network"]
+}
